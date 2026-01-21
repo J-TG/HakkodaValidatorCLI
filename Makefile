@@ -68,7 +68,7 @@ run-duckdb: ## Install deps and run Streamlit with DuckDB (in-memory)
 	@echo "Loading .env.local and .env.duckdb (if present)"
 	@set -a; [ -f .env.local ] && . .env.local; [ -f .env.duckdb ] && . .env.duckdb; set +a; \
 	echo "Running Streamlit app with DuckDB (in-memory)"; \
-	streamlit run streamlit_app.py
+	RUNTIME_MODE=duckdb streamlit run streamlit_app.py
 
 
 run-snowflake: validate-snowflake-env ## Install deps and run Streamlit connecting to Snowflake (uses env vars -> .streamlit/secrets.toml)
@@ -89,7 +89,18 @@ run-snowflake: validate-snowflake-env ## Install deps and run Streamlit connecti
 		"role = \"$${SF_ROLE}\"" \
 		> .streamlit/secrets.toml; \
 	echo "Wrote .streamlit/secrets.toml (check .gitignore before committing)."; \
-	streamlit run streamlit_app.py
+	RUNTIME_MODE=snowflake_local streamlit run streamlit_app.py
+
+upload-stage: ## Upload all app files directly to Snowflake stage (workaround when deploy fails)
+	@echo "Uploading files directly to Snowflake stage..."
+	@set -a; [ -f .env.snowflake-dev ] && . .env.snowflake-dev; [ -f .env.deploy-dev ] && . .env.deploy-dev; set +a; \
+	STAGE_PATH="@$${SF_DEPLOY_DATABASE}.$${SF_DEPLOY_SCHEMA}.$${SF_DEPLOY_STAGE}/$${SF_DEPLOY_APP}"; \
+	echo "Target stage: $${STAGE_PATH}"; \
+	snow stage copy streamlit_app.py "$${STAGE_PATH}" --overwrite; \
+	snow stage copy environment.yml "$${STAGE_PATH}" --overwrite; \
+	snow stage copy pages "$${STAGE_PATH}/pages" --overwrite --recursive; \
+	snow stage copy common "$${STAGE_PATH}/common" --overwrite --recursive; \
+	echo "All files uploaded to stage. Refresh the Streamlit app in your browser."
 
 clean: ## Remove generated secrets file
 	@echo "Removing generated secrets file"

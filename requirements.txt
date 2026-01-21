@@ -3,3 +3,4 @@ pandas
 duckdb
 pyarrow
 snowflake-connector-python[pandas]
+snowflake-snowpark-python
