@@ -1,20 +1,52 @@
 """
 Database connection helpers with auto-detection of runtime mode.
 
+⚠️  WAREHOUSE RUNTIME CONSTRAINTS (CRITICAL)
+============================================
+Snowflake Streamlit runs inside warehouse infrastructure with strict rules:
+- Only Anaconda-managed packages are available
+- No pip install at runtime
+- No dynamic dependency resolution
+- DuckDB is NOT available in Snowflake warehouse runtime
+
+This module enforces a hard boundary:
+- DuckDB imports are LAZY and GUARDED - only imported when runtime_mode == "duckdb"
+- Snowflake runtime code NEVER imports duckdb, even conditionally
+- Environment detection happens BEFORE any local-only imports
+
 Runtime modes:
 - "snowflake_deployed": Running inside Snowflake Streamlit (uses get_active_session)
 - "snowflake_local": Running locally with Snowflake credentials (uses connector)
-- "duckdb": Running locally with DuckDB (in-memory or file)
+- "duckdb": Running locally with DuckDB (in-memory or file) - LOCAL ONLY
+
+Principle: If it cannot run inside a Snowflake warehouse with Anaconda-managed
+dependencies, it is not part of the real application — only a local convenience.
 """
 
 import os
-from typing import Literal, Optional, Any, List, Tuple
+from copy import deepcopy
+from typing import Literal, Optional, Any, List, Tuple, Dict
 import streamlit as st
 import pandas as pd
+
+# =============================================================================
+# CRITICAL: Runtime mode detection must happen BEFORE any local-only imports
+# =============================================================================
+# DuckDB is LOCAL-ONLY. Never import it at module level.
+# The get_duckdb_connection() function contains a guarded import.
 
 # Default table prefix for Snowflake queries (configurable via UI)
 DEFAULT_SNOWFLAKE_DATABASE = "DATA_VAULT_DEV"
 DEFAULT_SNOWFLAKE_SCHEMA = "INFO_MART"
+
+METADATA_CONFIG_TABLE_NAME = "METADATA_CONFIG_TABLE_ELT"
+DEFAULT_INGESTION_METADATA_CONFIG: Dict[str, Dict[str, str]] = {
+    "DEV": {"database": "STAGE_DEV", "schema": "ELT"},
+    "TEST": {"database": "STAGE_TEST", "schema": "ELT"},
+    "UAT": {"database": "STAGE_UAT", "schema": "ELT"},
+    "PROD": {"database": "STAGE_PROD", "schema": "ELT"},
+}
+METADATA_ENVIRONMENTS = tuple(DEFAULT_INGESTION_METADATA_CONFIG.keys())
 
 RuntimeMode = Literal["snowflake_deployed", "snowflake_local", "duckdb"]
 
@@ -71,7 +103,25 @@ def detect_runtime() -> RuntimeMode:
 
 @st.cache_resource
 def get_duckdb_connection():
-    """Create and cache a DuckDB connection (no auto-created tables)."""
+    """
+    Create and cache a DuckDB connection.
+    
+    ⚠️  LOCAL-ONLY: This function must NEVER be called in Snowflake warehouse runtime.
+    The import is guarded here to prevent warehouse runtime failures.
+    
+    Raises:
+        RuntimeError: If called in Snowflake deployed mode (warehouse runtime)
+    """
+    # GUARD: Prevent accidental calls in warehouse runtime
+    current_mode = os.getenv("RUNTIME_MODE", "").lower()
+    if current_mode == "snowflake_deployed":
+        raise RuntimeError(
+            "DuckDB is not available in Snowflake warehouse runtime. "
+            "This is a local-only feature. Check runtime mode before calling."
+        )
+    
+    # LAZY IMPORT: DuckDB is only imported when this function is actually called
+    # This prevents import failures in Snowflake warehouse where duckdb doesn't exist
     import duckdb
     
     duckdb_database = os.getenv("DUCKDB_DATABASE", ":memory:")
@@ -82,7 +132,14 @@ def get_duckdb_connection():
 
 @st.cache_resource
 def get_snowflake_connector():
-    """Create and cache a Snowflake connector connection (for local dev)."""
+    """
+    Create and cache a Snowflake connector connection.
+    
+    ℹ️  LOCAL DEV ONLY: This uses snowflake-connector-python for local development.
+    In Snowflake warehouse runtime, use get_snowpark_session() instead.
+    The snowflake.connector package is available in Anaconda but Snowpark is preferred.
+    """
+    # LAZY IMPORT: Keep imports inside function for cleaner dependency management
     import snowflake.connector
     
     try:
@@ -162,6 +219,56 @@ def get_connection(mode: RuntimeMode) -> Any:
     elif mode == "snowflake_local":
         return get_snowflake_connector()
     raise ValueError(f"Unknown mode: {mode}")
+
+
+def _ensure_ingestion_configs() -> Dict[str, Dict[str, str]]:
+    configs = st.session_state.get("ingestion_metadata_config")
+    if not configs:
+        configs = {env: cfg.copy() for env, cfg in DEFAULT_INGESTION_METADATA_CONFIG.items()}
+        st.session_state["ingestion_metadata_config"] = configs
+    return configs
+
+
+def get_ingestion_metadata_env() -> str:
+    env = st.session_state.get("ingestion_metadata_env", METADATA_ENVIRONMENTS[0])
+    env = (env or METADATA_ENVIRONMENTS[0]).upper()
+    if env not in METADATA_ENVIRONMENTS:
+        env = METADATA_ENVIRONMENTS[0]
+    st.session_state["ingestion_metadata_env"] = env
+    return env
+
+
+def get_ingestion_metadata_env_config(env: Optional[str] = None) -> Dict[str, str]:
+    configs = _ensure_ingestion_configs()
+    target_env = env.upper() if env else get_ingestion_metadata_env()
+    if target_env not in configs:
+        default_cfg = DEFAULT_INGESTION_METADATA_CONFIG.get(
+            target_env,
+            {"database": f"STAGE_{target_env}", "schema": "ELT"},
+        )
+        configs[target_env] = default_cfg.copy()
+        st.session_state["ingestion_metadata_config"] = configs
+    return configs[target_env]
+
+
+def _normalize_metadata_location(env: str, config: Dict[str, str]) -> Dict[str, str]:
+    database = (config.get("database") or f"STAGE_{env}").strip()
+    schema = (config.get("schema") or "ELT").strip()
+    return {"database": database, "schema": schema}
+
+
+def get_ingestion_metadata_table(mode: RuntimeMode) -> str:
+    if mode == "duckdb":
+        return METADATA_CONFIG_TABLE_NAME
+    env = get_ingestion_metadata_env()
+    config = _normalize_metadata_location(env, get_ingestion_metadata_env_config(env))
+    return f"{config['database']}.{config['schema']}.{METADATA_CONFIG_TABLE_NAME}"
+
+
+def get_ingestion_metadata_table_path(env: Optional[str] = None) -> str:
+    env_name = env.upper() if env else get_ingestion_metadata_env()
+    config = _normalize_metadata_location(env_name, get_ingestion_metadata_env_config(env_name))
+    return f"{config['database']}.{config['schema']}.{METADATA_CONFIG_TABLE_NAME}"
 
 
 # =============================================================================
@@ -261,14 +368,15 @@ def check_test_tables_exist(
     conn: Any,
     mode: RuntimeMode,
     schema_prefix: str = "",
-) -> List[Tuple[str, bool, int]]:
+) -> List[Tuple[str, bool, int, Optional[str]]]:
     """
-    Check which test tables exist and their row counts.
+    Check which test tables exist, their row counts, and max date.
     
     Returns:
-        List of (table_name, exists, row_count) tuples
+        List of (table_name, exists, row_count, max_date) tuples
+        max_date is a string representation or None if not available
     """
-    from common.test_data import get_table_names
+    from common.test_data import get_table_names, get_table_date_column
     
     results = []
     
@@ -279,11 +387,26 @@ def check_test_tables_exist(
             full_name = table_name
         
         try:
-            query = f"SELECT COUNT(*) as cnt FROM {full_name}"
+            # Get row count
+            query = f"SELECT COUNT(*) as cnt FROM {full_name};"
             df = run_query(conn, query, mode)
             count = int(df.iloc[0, 0])
-            results.append((table_name, True, count))
+            
+            # Get max date if date column is defined
+            max_date = None
+            date_col = get_table_date_column(table_name)
+            if date_col and count > 0:
+                try:
+                    date_query = f"SELECT MAX({date_col}) as max_dt FROM {full_name};"
+                    date_df = run_query(conn, date_query, mode)
+                    max_val = date_df.iloc[0, 0]
+                    if max_val is not None:
+                        max_date = str(max_val)
+                except Exception:
+                    pass  # If date query fails, just skip it
+            
+            results.append((table_name, True, count, max_date))
         except Exception:
-            results.append((table_name, False, 0))
+            results.append((table_name, False, 0, None))
     
     return results
