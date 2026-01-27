@@ -1,1 +1,6 @@
-/Users/jtg/code/sf_cli_deploy/environment.yml
+name: sf_env
+channels:
+  - snowflake
+dependencies:
+  - streamlit
+  - snowflake-snowpark-python

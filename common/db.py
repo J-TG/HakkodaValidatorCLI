@@ -24,6 +24,7 @@ dependencies, it is not part of the real application — only a local convenienc
 """
 
 import os
+import re
 from copy import deepcopy
 from typing import Literal, Optional, Any, List, Tuple, Dict
 import streamlit as st
@@ -271,6 +272,46 @@ def get_ingestion_metadata_table_path(env: Optional[str] = None) -> str:
     return f"{config['database']}.{config['schema']}.{METADATA_CONFIG_TABLE_NAME}"
 
 
+_SQL_STRING_LITERAL_SPLIT = re.compile(r"('(?:''|[^'])*')")
+_DUCKDB_TYPE_REPLACEMENTS = (
+    (re.compile(r"\bVARIANT\b", re.IGNORECASE), "JSON"),
+    (re.compile(r"\bTIMESTAMP_NTZ\s*\(\s*\d+\s*\)", re.IGNORECASE), "TIMESTAMP"),
+    (re.compile(r"\bTIMESTAMP_NTZ\b", re.IGNORECASE), "TIMESTAMP"),
+    (re.compile(r"\bNUMBER\s*\(\s*(\d+)\s*,\s*(\d+)\s*\)", re.IGNORECASE), r"DECIMAL(\1,\2)"),
+    (re.compile(r"\bNUMBER\b", re.IGNORECASE), "DOUBLE"),
+)
+_DUCKDB_FUNC_REPLACEMENTS = (
+    # PARSE_JSON(x) → CAST(x AS JSON) so DuckDB can ingest the payload literal
+    (re.compile(r"\bPARSE_JSON\s*\(([^)]+)\)", re.IGNORECASE), r"CAST(\1 AS JSON)"),
+)
+
+
+def _substitute_outside_literals(sql: str, pattern: "re.Pattern[str]", replacement: str) -> str:
+    parts = _SQL_STRING_LITERAL_SPLIT.split(sql)
+    for idx in range(0, len(parts), 2):
+        parts[idx] = pattern.sub(replacement, parts[idx])
+    return "".join(parts)
+
+
+def _normalize_create_for_duckdb(sql: str) -> str:
+    stripped = sql.lstrip()
+    if not stripped.upper().startswith("CREATE"):
+        return sql
+    normalized = sql
+    for pattern, repl in _DUCKDB_TYPE_REPLACEMENTS:
+        normalized = _substitute_outside_literals(normalized, pattern, repl)
+    return normalized
+
+
+def _normalize_for_duckdb(sql: str) -> str:
+    """Apply DuckDB-specific normalizations for both DDL and DML."""
+
+    normalized = _normalize_create_for_duckdb(sql)
+    for pattern, repl in _DUCKDB_FUNC_REPLACEMENTS:
+        normalized = _substitute_outside_literals(normalized, pattern, repl)
+    return normalized
+
+
 # =============================================================================
 # Test Data Setup Functions
 # =============================================================================
@@ -284,7 +325,8 @@ def execute_ddl_dml(conn: Any, mode: RuntimeMode, sql: str) -> Tuple[bool, str]:
     """
     try:
         if mode == "duckdb":
-            conn.execute(sql)
+            normalized_sql = _normalize_for_duckdb(sql)
+            conn.execute(normalized_sql)
             return True, "OK"
         
         elif mode == "snowflake_deployed":
@@ -322,7 +364,7 @@ def setup_test_tables(
     Returns:
         List of (table_name, success, message) tuples
     """
-    from common.test_data import TEST_TABLES, format_ddl, format_dml
+    from common.test_data import TEST_TABLES, format_ddl, format_dml, LOCAL_ONLY_TABLES
     
     results = []
     
@@ -337,6 +379,11 @@ def setup_test_tables(
     
     for table_def in TEST_TABLES:
         table_name = table_def["name"]
+        # Skip creating local-only mapping tables unless running in DuckDB
+        if table_name.upper() in LOCAL_ONLY_TABLES and mode != "duckdb":
+            # Mark as skipped in results to indicate intentional omission
+            results.append((table_name, True, "Skipped (local-only mapping table)"))
+            continue
         
         # For Snowflake with context set, use just the table name
         if mode in ("snowflake_local", "snowflake_deployed") and schema_prefix:
@@ -368,6 +415,7 @@ def check_test_tables_exist(
     conn: Any,
     mode: RuntimeMode,
     schema_prefix: str = "",
+    query_log: Optional[List[str]] = None,
 ) -> List[Tuple[str, bool, int, Optional[str]]]:
     """
     Check which test tables exist, their row counts, and max date.
@@ -378,17 +426,23 @@ def check_test_tables_exist(
     """
     from common.test_data import get_table_names, get_table_date_column
     
+    effective_prefix = schema_prefix or ""
+    if not effective_prefix and mode in ("snowflake_local", "snowflake_deployed"):
+        effective_prefix = get_snowflake_table_prefix()
+
     results = []
     
     for table_name in get_table_names():
-        if schema_prefix:
-            full_name = f"{schema_prefix}.{table_name}"
+        if effective_prefix:
+            full_name = f"{effective_prefix}.{table_name}"
         else:
             full_name = table_name
         
         try:
             # Get row count
             query = f"SELECT COUNT(*) as cnt FROM {full_name};"
+            if query_log is not None:
+                query_log.append(query)
             df = run_query(conn, query, mode)
             count = int(df.iloc[0, 0])
             
@@ -398,6 +452,8 @@ def check_test_tables_exist(
             if date_col and count > 0:
                 try:
                     date_query = f"SELECT MAX({date_col}) as max_dt FROM {full_name};"
+                    if query_log is not None:
+                        query_log.append(date_query)
                     date_df = run_query(conn, date_query, mode)
                     max_val = date_df.iloc[0, 0]
                     if max_val is not None:

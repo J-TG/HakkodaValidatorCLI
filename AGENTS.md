@@ -54,6 +54,8 @@ def get_duckdb_connection():
 import duckdb  # This line alone will crash in Snowflake
 ```
 
+**Local type translation:** DuckDB does not support Snowflake-only data types such as `VARIANT` or `TIMESTAMP_NTZ`. The shared `execute_ddl_dml()` helper automatically rewrites CREATE statements when `RUNTIME_MODE=duckdb` so the canonical Snowflake DDL can still run locally (e.g., `VARIANT → JSON`, `TIMESTAMP_NTZ → TIMESTAMP`). This keeps a single source of truth while respecting DuckDB limits. Avoid adding new Variant columns unless they are truly required in Snowflake, because the translation only covers common primitives.
+
 ### Snowpark is the Lingua Franca
 Snowpark Python is first-class in warehouse runtime:
 - Fully supported and optimized
@@ -127,6 +129,7 @@ Warehouses are expensive. DDL/DML is explicit:
   - common/db.py: Database connection helpers with guarded imports and auto-detection
   - common/test_data.py: Test data definitions (DDL/DML) - single source of truth
   - common/hello.py: Simple hello helper
+  - common/ingestion_templates.py: Centralized ingestion DDL/procedure templates plus metadata helpers
 
 ---
 
@@ -207,16 +210,54 @@ No manual selection needed - the Makefile sets `RUNTIME_MODE` automatically.
 ## Test Data System
 Test data is defined centrally in `common/test_data.py` and can be created consistently across all modes:
 
-**Tables available:**
-- TESTTABLE: Call center reference data (TPC-DS style)
-- SAMPLE_DATA: Simple key-value sample table (note: not "SAMPLE" - that's a reserved keyword)
-- DAILY_METRICS: Time-series metrics data
-
 **Setup buttons in sidebar:**
-- 🔍 Check Table Status: Verify which tables exist and row counts
-- 🚀 Setup Test Data: CREATE OR REPLACE tables and populate with sample data
+- 🔍 **Check Table Status** – verifies existence and row counts before you query
+- 🚀 **Setup Test Data** – runs CREATE OR REPLACE plus seed inserts for every table below
+
+| Table | Description |
+| --- | --- |
+| TESTTABLE | Call center reference data (TPC-DS style) |
+| SAMPLE_DATA | Simple key-value sample table (note: not "SAMPLE" - that's a reserved keyword) |
+| DAILY_METRICS | Time-series metrics data |
+| SCANDS_FINANCE_S2T | Finance source-to-target lineage mappings |
+| SCANDS_PROD_S2T | Production/admin lineage mappings |
+| SCANDS_QUALITYRISK_S2T | Quality & risk lineage mappings |
+| VALIDATION_OBJECTS | Validation registry supporting Settings → Validation |
+| VALIDATION_METRICS_SOURCE | SQL Server/source-side ingestion metrics feeding validation joins |
+| VALIDATION_METRICS_TARGET | Snowflake target ingestion metrics compared against source baselines |
+| VALIDATION_MODEL_RUNS | Audit log of modelling validation executions (manual or scheduled) |
+| VALIDATION_MODEL_RESULTS | Step-level modelling validation payloads persisted as VARIANT |
+
+`VALIDATION_METRICS_SOURCE` and `VALIDATION_METRICS_TARGET` share the same DDL so the Validation → Ingestion page can full-outer-join the two datasets and spotlight matches or gaps between source scans and Snowflake landings.
+`VALIDATION_MODEL_RUNS` and `VALIDATION_MODEL_RESULTS` capture the schedule metadata plus step outputs for the Validation → Modelling workflow so every execution (manual or scheduled) is auditable.
 
 **For Snowflake modes:** Configure target Database and Schema in sidebar before setup.
+
+## Compatibility View Builder
+
+- Unified mapping view: `SOURCE_TO_TARGET_MAPPING_VW` lives alongside the S2T tables and UNION ALLs `SCANDS_FINANCE_S2T`, `SCANDS_PROD_S2T`, and `SCANDS_QUALITYRISK_S2T`, tagging each record with a `DOMAIN` value for filtering.
+- Navigate to **Compatibility → Compatibility Views** to configure mapping/view schemas, refresh the unioned mapping view, and build/drop compatibility views in your chosen Snowflake schema.
+- Filtering: Domain, source schema, and source table selectors drive the SQL preview; each generated `CREATE OR REPLACE VIEW` statement maps target columns back to legacy source column names in ordinal order.
+- Safety checks: Before creating a view the app verifies the Snowflake target table exists; all SQL executes through the shared `run_query`/`execute_ddl_dml` helpers (no arbitrary execution, no DuckDB imports).
+- Settings now includes a **Validation** tab that writes directly to `VALIDATION_OBJECTS`, providing an auditable registry of fully qualified validation targets referenced by the builder.
+- DuckDB mode automatically strips database/schema qualifiers when generating mapping SQL so local runs succeed even though DuckDB lacks Snowflake catalogs.
+
+### Builder Configuration
+
+The builder always pulls its lineage columns from the canonical S2T tables below, so teams can verify coverage before refreshing or generating views:
+- `SCANDS_FINANCE_S2T`
+- `SCANDS_PROD_S2T`
+- `SCANDS_QUALITYRISK_S2T`
+
+## Validation Workspace
+
+- **Validation → Ingestion** reads `VALIDATION_METRICS_SOURCE` and `VALIDATION_METRICS_TARGET`, full-outer-joins the metrics, and highlights matches, mismatches, and source/target-only rows with filterable severity slices.
+- **Validation → Modelling** runs the Info Mart comparison script step-by-step directly inside the UI, shows each query's status/result, and optionally appends the JSON summary step when the checkbox is enabled.
+- **Validation → Model Monitoring** summarizes every scheduled modelling task (task name, latest status, days active, source FQN, compatibility view FQN) and exposes a drill-down that filters audit history by database/schema/table before showing the stored step results.
+- Every modelling run captures scheduling metadata (`schedule_flag`, `schedule_start_date`, `schedule_end_date`, `run_type`) plus operator notes, then persists into `VALIDATION_MODEL_RUNS`.
+- Step outputs (column inventory, row-level summary, detailed mismatches, orphan checks, JSON payloads) are written to `VALIDATION_MODEL_RESULTS` as VARIANT for day-over-day comparisons.
+- The page surfaces the latest audit log so teams can replay prior runs, inspect saved payloads, and prove what was executed (and when) without rerunning heavy SQL unnecessarily.
+- When the **Schedule daily run?** toggle is enabled, the app now enforces an explicit `DEV/TEST/UAT/PROD` environment selection, records it in `VALIDATION_MODEL_RUNS`, and refreshes the warehouse-side command queue `DATA_VAULT_TEMP.MIGRATION_COPILOT.VALIDATION_<TABLE>_<ENV>_COMMAND` so Snowflake Tasks can execute the exact same SQL workflow without Streamlit.
 
 ## Ingestion Metadata Environments
 
@@ -225,6 +266,23 @@ Test data is defined centrally in `common/test_data.py` and can be created consi
 - Selecting an active environment updates Pipeline Metrics and the Query Settings preview.
 - Each environment section lets you override the default database/schema if your Snowflake layout differs.
 - DuckDB mode still uses the standalone `METADATA_CONFIG_TABLE_ELT` created via the Test Data buttons.
+
+## Ingestion Monitoring (environment-aware)
+
+- The page now shows combined and per-environment tabs (DEV/TEST/UAT/PROD) for charts and tables.
+- Combined summaries aggregate selected environments; tabs render one environment at a time.
+- An environment summary grid (last 24h) uses the warehouse view `ELT_ENVIRONMENT_SUMMARY_24H_VW` and expects an `ENVIRONMENT` column in upstream views (e.g., unioned `ELT_JOB_RUN` per env). Ensure the view exists in each env stage (`STAGE_DEV`, `STAGE_TEST`, `STAGE_UAT`, `STAGE_PROD`).
+- When you need multi-environment rollups, do **not** change the base DDLs. Create views that UNION the per-environment tables, tagging each branch with its env label (e.g., `SELECT ..., 'DEV' AS ENVIRONMENT FROM STAGE_DEV.ELT.<TABLE> UNION ALL ... TEST ... UAT ... PROD`). This keeps Snowflake DDLs untouched while enabling cross-env monitoring.
+
+## Ingestion Copilot (Builder + Library)
+
+- The **Copilot → Ingestion** page now walks developers through provisioning a new source across SQL Server, Azure DB, Flat File, or Excel patterns.
+- The guided form captures landing schema/table, wildcard patterns, delta columns, server metadata, and variant payload notes, then emits two warehouse-ready statements:
+  - **Adhoc trigger insert** (DEV/TEST/UAT only) creates a record in `METADATA_CONFIG_TABLE_ELT_ADHOC` with `ERROR_STATUS='TRIGGERED_NOT_STARTED'` so the ADF process picks it up immediately.
+  - **Schedule enable** updates the canonical `METADATA_CONFIG_TABLE_ELT` row once a finished adhoc proof exists, ensuring PROD requests cannot bypass the safety check.
+- ADF polling assumptions are explicit (hourly on the :00) and the generated SQL stamps `LAST_MODIFIED_DATE_LOADED` so command queues only fetch freshly-modified payloads.
+- All SQL templates, payload builders, and metadata key helpers live in `common/ingestion_templates.py`, making it easy to keep the Snowflake-first text canonical and reuse it across pages.
+- Below the builder the page exposes a reference DDL library: Azure/SQL dictionaries, EDW/source-file tables, metadata tables, and the `CREATE_SCHEMA_DYNAMIC` procedure can be previewed or copy/pasted per environment.
 
 ## Local development (regular Streamlit)
 Use the Makefile targets (these install requirements.txt before running):
@@ -294,6 +352,7 @@ When writing SQL for Snowflake (in test_data.py or elsewhere):
 - ✅ No reserved SQL keywords used as table names (SAMPLE → SAMPLE_DATA).
 - ✅ common/__init__.py exists for package recognition in Snowflake.
 - ✅ Button-driven DDL/DML for cost-aware warehouse usage.
+- ✅ Streamlit UI components use `width="stretch"|"content"` — `use_container_width` is deprecated after 2025-12-31.
 
 ---
 
