@@ -1,0 +1,18 @@
+default_connection_name = "DEV"
+
+[cli]
+ignore_new_version_warning = false
+
+[cli.logs]
+save_logs = true
+path = "C:\\Users\\john.smith\\AppData\\Local\\snowflake\\logs"
+level = "info"
+
+[connections.DEV]
+account = "SCAN-HEART"
+user = "XX@SCANHEALTHPLAN.COM"
+database = "DATA_VAULT_TEMP"
+schema = "INFO_MART"
+warehouse = "ADHOC_NONPROD_WH"
+role = "FR_ENGINEER_STREAMLIT"
+authenticator = "externalbrowser"

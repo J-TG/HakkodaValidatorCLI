@@ -568,6 +568,131 @@ def build_adhoc_insert_sql(
     )
 
 
+def build_create_adhoc_proc_sql(environment: str) -> str:
+    """Return CREATE OR REPLACE PROCEDURE SQL that inserts a single row into
+    STAGE_<ENV>.ELT.METADATA_CONFIG_TABLE_ELT_ADHOC with the columns:
+    METADATA_CONFIG_KEY, LOAD_START_DATETIME, LOAD_END_DATETIME, LAST_TRIGGER_TIMESTAMP.
+    The procedure uses Python handler `run` and Snowpark to append the row.
+    """
+    env_upper = environment.upper()
+    database = f"STAGE_{env_upper}"
+    proc_name = f"{database}.ELT.INSERT_METADATA_CONFIG_TABLE_ADHOC_{env_upper}"
+    table_name = f"{database}.ELT.METADATA_CONFIG_TABLE_ELT_ADHOC"
+
+    py = f"""
+import snowflake.snowpark as snowpark
+
+def run(METADATA_CONFIG_KEY, LOAD_START_DATETIME, LOAD_END_DATETIME, LAST_TRIGGER_TIMESTAMP):
+    session = snowpark.Session.builder.getOrCreate()
+    insert_data = [(
+        METADATA_CONFIG_KEY,
+        LOAD_START_DATETIME,
+        LOAD_END_DATETIME,
+        LAST_TRIGGER_TIMESTAMP,
+    )]
+    df = session.create_dataframe(
+        insert_data,
+        schema=[
+            "METADATA_CONFIG_KEY",
+            "LOAD_START_DATETIME",
+            "LOAD_END_DATETIME",
+            "LAST_TRIGGER_TIMESTAMP",
+        ],
+    )
+    df.write.mode("append").save_as_table("{table_name}")
+    return "Inserted adhoc trigger"
+""".strip()
+
+    ddl = f"""
+CREATE OR REPLACE PROCEDURE {proc_name}(
+    METADATA_CONFIG_KEY VARCHAR,
+    LOAD_START_DATETIME TIMESTAMP_NTZ,
+    LOAD_END_DATETIME TIMESTAMP_NTZ,
+    LAST_TRIGGER_TIMESTAMP TIMESTAMP_NTZ
+)
+RETURNS VARCHAR
+LANGUAGE PYTHON
+RUNTIME_VERSION = '3.11'
+PACKAGES = ('snowflake-snowpark-python')
+HANDLER = 'run'
+EXECUTE AS CALLER
+AS '
+{py}
+';
+""".strip()
+
+    return ddl
+
+
+def build_schedule_sets_and_call(
+    environment: str,
+    *,
+    logical_name: str,
+    file_landing_schema: str,
+    file_wildcard_pattern: str,
+    file_table_name: str,
+    file_extension: str,
+    sheet_name: str,
+    source_type_label: str,
+    enabled_flag: bool,
+    file_format: str,
+    has_header: str,
+    database_name: str,
+    schema_name: str,
+    source_table_name: str,
+    delta_column: str,
+    change_tracking_type: str,
+    server_name: str,
+    file_server_load_type: str,
+    filestamp_format: str,
+    auto_ingest: str,
+    file_server_filepath: str,
+    fixed_width_filetype: str,
+    regex_pattern: str,
+) -> Tuple[str, str]:
+    """Return a tuple of (set_statements, call_statement) for the metadata procedure.
+
+    `set_statements` contains SET lines for each procedure parameter (LOGICAL_NAME, ...).
+    `call_statement` is the CALL to STAGE_<ENV>.ELT.INSERT_METADATA_CONFIG_TABLE_<ENV> with
+    dollar-parameter placeholders (e.g. $LOGICAL_NAME).
+    """
+    env_upper = environment.upper()
+    database = f"STAGE_{env_upper}"
+
+    assignments = _metadata_assignments(
+        logical_name=logical_name,
+        file_landing_schema=file_landing_schema,
+        file_wildcard_pattern=file_wildcard_pattern,
+        file_table_name=file_table_name,
+        file_extension=file_extension,
+        sheet_name=sheet_name,
+        source_type_label=source_type_label,
+        enabled_flag=enabled_flag,
+        file_format=file_format,
+        has_header=has_header,
+        database_name=database_name,
+        schema_name=schema_name,
+        source_table_name=source_table_name,
+        delta_column=delta_column,
+        change_tracking_type=change_tracking_type,
+        server_name=server_name,
+        file_server_load_type=file_server_load_type,
+        filestamp_format=filestamp_format,
+        auto_ingest=auto_ingest,
+        file_server_filepath=file_server_filepath,
+        fixed_width_filetype=fixed_width_filetype,
+        regex_pattern=regex_pattern,
+    )
+
+    set_lines = "\n".join(f"SET {name:<25} = {value};" for name, value in assignments)
+
+    procedure_name = f"{database}.ELT.INSERT_METADATA_CONFIG_TABLE_{env_upper}"
+    param_block = ",\n".join(f"${name}" for name, _ in assignments)
+    call_block = f"CALL {procedure_name}(\n    {param_block}\n);"
+
+    return set_lines, call_block
+
+
 def build_schedule_update_sql(
     environment: str,
     *,

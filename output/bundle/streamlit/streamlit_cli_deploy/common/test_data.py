@@ -259,6 +259,66 @@ INSERT INTO {table_ref} (
 """,
     },
     {
+        "name": "METADATA_CONFIG_TABLE_ELT_ADHOC",
+        "description": "Adhoc metadata configuration table for on-demand ELT triggers",
+        "date_column": "LAST_TRIGGER_TIMESTAMP",
+        "ddl": """
+CREATE OR REPLACE TABLE {table_ref} (
+    METADATA_CONFIG_KEY VARCHAR(16777216),
+    LOGICAL_NAME VARCHAR(16777216),
+    DATABASE_NAME VARCHAR(255),
+    SCHEMA_NAME VARCHAR(255),
+    SOURCE_TABLE_NAME VARCHAR(255),
+    LOAD_START_DATETIME TIMESTAMP,
+    LOAD_END_DATETIME TIMESTAMP,
+    LAST_TRIGGER_TIMESTAMP TIMESTAMP,
+    ERROR_STATUS VARCHAR(255),
+    PAYLOAD VARIANT
+);
+""",
+        "dml": """
+INSERT INTO {table_ref} (
+    METADATA_CONFIG_KEY, LOGICAL_NAME, DATABASE_NAME, SCHEMA_NAME, SOURCE_TABLE_NAME,
+    LOAD_START_DATETIME, LOAD_END_DATETIME, LAST_TRIGGER_TIMESTAMP, ERROR_STATUS
+) VALUES
+    ('adhoc-001', 'AgentCubedODS', 'AgentCubedODS', 'A3_CURR', 'AgencyManagementParty', '2026-01-27 08:00:00', '2026-01-27 08:15:00', '2026-01-27 07:55:00', 'COMPLETED'),
+    ('adhoc-002', 'MindfulODS', 'MindfulODS', 'dbo', 'Interactions', '2026-01-27 09:00:00', '2026-01-27 09:10:00', '2026-01-27 08:55:00', 'COMPLETED'),
+    ('adhoc-003', 'GenesysODS', 'GenesysODS', 'dbo', 'CallRecords', '2026-01-28 06:00:00', NULL, '2026-01-28 05:55:00', 'TRIGGERED_NOT_STARTED'),
+    ('adhoc-004', 'LEGACY', 'SCANDS_PROD', 'dbo', 'D_Site_Attributes', '2026-01-28 10:00:00', '2026-01-28 10:22:00', '2026-01-28 09:58:00', 'COMPLETED'),
+    ('adhoc-005', 'LEGACY', 'SCANDS_STAGING', 'dbo', 'CMSLTIValue', '2026-01-28 11:00:00', '2026-01-28 11:05:00', '2026-01-28 10:55:00', 'COMPLETED'),
+    ('adhoc-006', 'Excel_Test_CSV', 'SANDBOX', 'dbo', 'CareLinx_Member_Utilization_CSV', '2026-01-28 12:00:00', NULL, '2026-01-28 11:58:00', 'ERROR'),
+    ('adhoc-007', 'MedHOK-CIL', 'MedHOK', 'dbo', 'Intervention_MEDICARE', '2026-01-28 13:00:00', '2026-01-28 13:30:00', '2026-01-28 12:55:00', 'COMPLETED'),
+    ('adhoc-008', 'SupplementalBenefit', 'SupplementalBenefit', 'dbo', 'Astrana', '2026-01-28 14:00:00', NULL, '2026-01-28 13:58:00', 'TRIGGERED_NOT_STARTED'),
+    ('adhoc-009', 'AgentCubedODS', 'AgentCubedODS', 'A3_CURR', 'AgentProfile', '2026-01-28 15:00:00', '2026-01-28 15:45:00', '2026-01-28 14:55:00', 'COMPLETED'),
+    ('adhoc-010', 'GenesysODS', 'GenesysODS', 'dbo', 'AgentActivity', '2026-01-28 16:00:00', '2026-01-28 16:20:00', '2026-01-28 15:58:00', 'COMPLETED'),
+    ('adhoc-011', 'MindfulODS', 'MindfulODS', 'dbo', 'SurveyResponses', '2026-01-29 06:00:00', NULL, '2026-01-29 05:55:00', 'TRIGGERED_NOT_STARTED'),
+    ('adhoc-012', 'LEGACY', 'SCANDS_Finance', 'dbo', 'F_ClaimPayment', '2026-01-29 07:00:00', '2026-01-29 07:35:00', '2026-01-29 06:58:00', 'COMPLETED'),
+    ('adhoc-013', 'AgentCubedODS', 'AgentCubedODS', 'A3_CURR', 'PolicyHolder', '2026-01-29 08:00:00', NULL, '2026-01-29 07:55:00', 'FAILED'),
+    ('adhoc-014', 'LEGACY', 'SCANDS_PROD', 'dbo', 'B_MemberApplicationHistory', '2026-01-29 09:00:00', '2026-01-29 09:50:00', '2026-01-29 08:58:00', 'COMPLETED'),
+    ('adhoc-015', 'GenesysODS', 'GenesysODS', 'dbo', 'QueueMetrics', '2026-01-29 10:00:00', NULL, '2026-01-29 09:58:00', 'TRIGGERED_NOT_STARTED');
+""",
+    },
+    {
+        "name": "METADATA_CONFIG_TABLE_ELT_ADHOC_VW",
+        "description": "View wrapper for adhoc metadata config table (DuckDB compatibility)",
+        "ddl": """
+CREATE OR REPLACE VIEW {table_ref} AS
+SELECT
+    METADATA_CONFIG_KEY,
+    LOGICAL_NAME,
+    DATABASE_NAME,
+    SCHEMA_NAME,
+    SOURCE_TABLE_NAME,
+    LOAD_START_DATETIME,
+    LOAD_END_DATETIME,
+    LAST_TRIGGER_TIMESTAMP,
+    ERROR_STATUS,
+    PAYLOAD,
+    'LOCAL' AS ENVIRONMENT
+FROM METADATA_CONFIG_TABLE_ELT_ADHOC;
+""",
+    },
+    {
         "name": "METADATA_SQL_SERVER_LOOKUP_VW",
         "description": "View for SQL Server table lookup filters",
         "ddl": """
@@ -695,7 +755,7 @@ WHERE UPPER(ENVIRONMENT) = 'PROD';
 CREATE OR REPLACE VIEW {table_ref} AS
 SELECT *
 FROM {schema_prefix}ELT_LOAD_COMPARISON_ENV_VW
-WHERE RUN_DATE >= CURRENT_DATE - INTERVAL '7' DAY;
+WHERE RUN_DATE >= CURRENT_DATE - INTERVAL '7 days';
 """,
         "dml": "",
     },
@@ -759,27 +819,30 @@ CREATE OR REPLACE TABLE {table_ref} (
     IS_NULLABLE DECIMAL(38, 0),
     TARGET_TABLE_NAME VARCHAR(16777216),
     TARGET_COLUMN_NAME VARCHAR(16777216),
-    TARGET_DATA_TYPE VARCHAR(16777216)
+    TARGET_DATA_TYPE VARCHAR(16777216),
+    SOURCE_DATABASE VARCHAR(256) DEFAULT 'SCANDS_Finance',
+    TARGET_DATABASE VARCHAR(256) DEFAULT 'DATA_VAULT'
 );
 """,
         "dml": """
 INSERT INTO {table_ref} (
     SOURCE_SCHEMA_NAME, SOURCE_TABLE_NAME, SOURCE_COLUMN_NAME, ORDINAL_POSITION,
     SOURCE_DATA_TYPE, MAX_LENGTH, PRECISION, SCALE, IS_NULLABLE,
-    TARGET_TABLE_NAME, TARGET_COLUMN_NAME, TARGET_DATA_TYPE
+    TARGET_TABLE_NAME, TARGET_COLUMN_NAME, TARGET_DATA_TYPE,
+    SOURCE_DATABASE, TARGET_DATABASE
 ) VALUES
-    ('dbo', 'ACT_dimMemberMonths', 'MemberID', 1, 'varchar', 40, 0, 0, 0, 'ACT_DIM_MEMBER_MONTHS', 'MEMBER_ID', 'VARCHAR(40)'),
-    ('dbo', 'ACT_dimMemberMonths', 'YearMo', 2, 'varchar', 6, 0, 0, 0, 'ACT_DIM_MEMBER_MONTHS', 'YEAR_MO', 'VARCHAR(6)'),
-    ('dbo', 'ACT_dimMemberMonths', 'Contract_PBP', 3, 'varchar', 40, 0, 0, 1, 'ACT_DIM_MEMBER_MONTHS', 'CONTRACT_PBP', 'VARCHAR(40)'),
-    ('dbo', 'ACT_dimMemberMonths', 'ContractID', 4, 'varchar', 30, 0, 0, 0, 'ACT_DIM_MEMBER_MONTHS', 'CONTRACT_ID', 'VARCHAR(30)'),
-    ('dbo', 'ACT_dimMemberMonths', 'Gender', 5, 'varchar', 1, 0, 0, 1, 'ACT_DIM_MEMBER_MONTHS', 'GENDER', 'VARCHAR(1)'),
-    ('dbo', 'ACT_dimMemberMonths', 'ManagedPopulation', 7, 'varchar', 40, 0, 0, 1, 'ACT_DIM_MEMBER_MONTHS', 'MANAGED_POPULATION', 'VARCHAR(40)'),
-    ('dbo', 'ACT_dimMemberMonths', 'HeartCondition', 14, 'bit', 1, 1, 0, 1, 'ACT_DIM_MEMBER_MONTHS', 'HEART_CONDITION', 'BOOLEAN'),
-    ('dbo', 'ACT_outClaims_BD', 'MEMBERID', 1, 'varchar', 40, 0, 0, 1, 'ACT_OUT_CLAIMS_BD', 'MEMBERID', 'VARCHAR(40)'),
-    ('dbo', 'ACT_outClaims_BD', 'SERVICEDATE', 2, 'datetime', 8, 23, 3, 1, 'ACT_OUT_CLAIMS_BD', 'SERVICEDATE', 'TIMESTAMP_NTZ(3)'),
-    ('dbo', 'ACT_outClaims_BD', 'PAID_ADJ', 15, 'float', 8, 53, 0, 1, 'ACT_OUT_CLAIMS_BD', 'PAID_ADJ', 'FLOAT'),
-    ('dbo', 'ACT_outMemberMonths_BD', 'MemberID', 1, 'varchar', 40, 0, 0, 0, 'ACT_OUT_MEMBER_MONTHS_BD', 'MEMBER_ID', 'VARCHAR(40)'),
-    ('dbo', 'ACT_outMemberMonths_BD', 'PartC_risk_score_2014', 5, 'numeric', 5, 5, 2, 1, 'ACT_OUT_MEMBER_MONTHS_BD', 'PART_C_RISK_SCORE_2014', 'NUMBER(5,2)');
+    ('dbo', 'ACT_dimMemberMonths', 'MemberID', 1, 'varchar', 40, 0, 0, 0, 'ACT_DIM_MEMBER_MONTHS', 'MEMBER_ID', 'VARCHAR(40)', 'SCANDS_Finance', 'DATA_VAULT'),
+    ('dbo', 'ACT_dimMemberMonths', 'YearMo', 2, 'varchar', 6, 0, 0, 0, 'ACT_DIM_MEMBER_MONTHS', 'YEAR_MO', 'VARCHAR(6)', 'SCANDS_Finance', 'DATA_VAULT'),
+    ('dbo', 'ACT_dimMemberMonths', 'Contract_PBP', 3, 'varchar', 40, 0, 0, 1, 'ACT_DIM_MEMBER_MONTHS', 'CONTRACT_PBP', 'VARCHAR(40)', 'SCANDS_Finance', 'DATA_VAULT'),
+    ('dbo', 'ACT_dimMemberMonths', 'ContractID', 4, 'varchar', 30, 0, 0, 0, 'ACT_DIM_MEMBER_MONTHS', 'CONTRACT_ID', 'VARCHAR(30)', 'SCANDS_Finance', 'DATA_VAULT'),
+    ('dbo', 'ACT_dimMemberMonths', 'Gender', 5, 'varchar', 1, 0, 0, 1, 'ACT_DIM_MEMBER_MONTHS', 'GENDER', 'VARCHAR(1)', 'SCANDS_Finance', 'DATA_VAULT'),
+    ('dbo', 'ACT_dimMemberMonths', 'ManagedPopulation', 7, 'varchar', 40, 0, 0, 1, 'ACT_DIM_MEMBER_MONTHS', 'MANAGED_POPULATION', 'VARCHAR(40)', 'SCANDS_Finance', 'DATA_VAULT'),
+    ('dbo', 'ACT_dimMemberMonths', 'HeartCondition', 14, 'bit', 1, 1, 0, 1, 'ACT_DIM_MEMBER_MONTHS', 'HEART_CONDITION', 'BOOLEAN', 'SCANDS_Finance', 'DATA_VAULT'),
+    ('dbo', 'ACT_outClaims_BD', 'MEMBERID', 1, 'varchar', 40, 0, 0, 1, 'ACT_OUT_CLAIMS_BD', 'MEMBERID', 'VARCHAR(40)', 'SCANDS_Finance', 'DATA_VAULT'),
+    ('dbo', 'ACT_outClaims_BD', 'SERVICEDATE', 2, 'datetime', 8, 23, 3, 1, 'ACT_OUT_CLAIMS_BD', 'SERVICEDATE', 'TIMESTAMP_NTZ(3)', 'SCANDS_Finance', 'DATA_VAULT'),
+    ('dbo', 'ACT_outClaims_BD', 'PAID_ADJ', 15, 'float', 8, 53, 0, 1, 'ACT_OUT_CLAIMS_BD', 'PAID_ADJ', 'FLOAT', 'SCANDS_Finance', 'DATA_VAULT'),
+    ('dbo', 'ACT_outMemberMonths_BD', 'MemberID', 1, 'varchar', 40, 0, 0, 0, 'ACT_OUT_MEMBER_MONTHS_BD', 'MEMBER_ID', 'VARCHAR(40)', 'SCANDS_Finance', 'DATA_VAULT'),
+    ('dbo', 'ACT_outMemberMonths_BD', 'PartC_risk_score_2014', 5, 'numeric', 5, 5, 2, 1, 'ACT_OUT_MEMBER_MONTHS_BD', 'PART_C_RISK_SCORE_2014', 'NUMBER(5,2)', 'SCANDS_Finance', 'DATA_VAULT');
 """,
     },
     {
@@ -979,27 +1042,30 @@ CREATE OR REPLACE TABLE {table_ref} (
     IS_NULLABLE DECIMAL(38, 0),
     TARGET_TABLE_NAME VARCHAR(16777216),
     TARGET_COLUMN_NAME VARCHAR(16777216),
-    TARGET_DATA_TYPE VARCHAR(16777216)
+    TARGET_DATA_TYPE VARCHAR(16777216),
+    SOURCE_DATABASE VARCHAR(256) DEFAULT 'SCANDS_Prod',
+    TARGET_DATABASE VARCHAR(256) DEFAULT 'DATA_VAULT'
 );
 """,
         "dml": """
 INSERT INTO {table_ref} (
     SOURCE_SCHEMA_NAME, SOURCE_TABLE_NAME, SOURCE_COLUMN_NAME, ORDINAL_POSITION,
     SOURCE_DATA_TYPE, MAX_LENGTH, PRECISION, SCALE, IS_NULLABLE,
-    TARGET_TABLE_NAME, TARGET_COLUMN_NAME, TARGET_DATA_TYPE
+    TARGET_TABLE_NAME, TARGET_COLUMN_NAME, TARGET_DATA_TYPE,
+    SOURCE_DATABASE, TARGET_DATABASE
 ) VALUES
-    ('dbo', 'Admin_Index', 'TableName', 1, 'varchar', 50, 0, 0, 1, 'ADMIN_INDEX', 'TABLE_NAME', 'VARCHAR(50)'),
-    ('dbo', 'Admin_Index', 'ColumnName', 2, 'varchar', -1, 0, 0, 1, 'ADMIN_INDEX', 'COLUMN_NAME', 'VARCHAR(16777216)'),
-    ('dbo', 'Admin_Index', 'IndexName', 4, 'varchar', 100, 0, 0, 1, 'ADMIN_INDEX', 'INDEX_NAME', 'VARCHAR(100)'),
-    ('dbo', 'Admin_Table', 'TableName', 1, 'varchar', 50, 0, 0, 1, 'ADMIN_TABLE', 'TABLE_NAME', 'VARCHAR(50)'),
-    ('dbo', 'Admin_Table', 'DWLastUpdatedDate', 2, 'datetime', 8, 23, 3, 1, 'ADMIN_TABLE', 'DW_LAST_UPDATED_DATE', 'TIMESTAMP_NTZ(3)'),
-    ('dbo', 'Admin_Table', 'TableID', 3, 'smallint', 2, 5, 0, 0, 'ADMIN_TABLE', 'TABLE_ID', 'SMALLINT'),
-    ('dbo', 'B_AuthDiagnosis', 'AuthId', 1, 'varchar', 50, 0, 0, 1, 'BRIDGE_AUTH_DIAGNOSIS', 'AUTH_ID', 'VARCHAR(50)'),
-    ('dbo', 'B_AuthDiagnosis', 'DiagnosisDesc', 10, 'varchar', 500, 0, 0, 1, 'BRIDGE_AUTH_DIAGNOSIS', 'DIAGNOSIS_DESC', 'VARCHAR(500)'),
-    ('dbo', 'B_AuthDiagnosis', 'CreatedDate', 19, 'datetime', 8, 23, 3, 1, 'BRIDGE_AUTH_DIAGNOSIS', 'CREATED_DATE', 'TIMESTAMP_NTZ(3)'),
-    ('dbo', 'B_AuthDiagnosis_BU_Final', 'DiagnosisCd', 9, 'varchar', 10, 0, 0, 1, 'BRIDGE_AUTH_DIAGNOSIS_BU_FINAL', 'DIAGNOSIS_CD', 'VARCHAR(10)'),
-    ('dbo', 'B_ClaimAdjustmentSegment', 'ClaimID', 1, 'char', 12, 0, 0, 0, 'BRIDGE_CLAIM_ADJUSTMENT_SEGMENT', 'CLAIM_ID', 'CHAR(12)'),
-    ('dbo', 'B_ClaimAdjustmentSegment', 'Amount', 6, 'money', 8, 19, 4, 1, 'BRIDGE_CLAIM_ADJUSTMENT_SEGMENT', 'AMOUNT', 'NUMBER(19,4)');
+    ('dbo', 'Admin_Index', 'TableName', 1, 'varchar', 50, 0, 0, 1, 'ADMIN_INDEX', 'TABLE_NAME', 'VARCHAR(50)', 'SCANDS_Prod', 'DATA_VAULT'),
+    ('dbo', 'Admin_Index', 'ColumnName', 2, 'varchar', -1, 0, 0, 1, 'ADMIN_INDEX', 'COLUMN_NAME', 'VARCHAR(16777216)', 'SCANDS_Prod', 'DATA_VAULT'),
+    ('dbo', 'Admin_Index', 'IndexName', 4, 'varchar', 100, 0, 0, 1, 'ADMIN_INDEX', 'INDEX_NAME', 'VARCHAR(100)', 'SCANDS_Prod', 'DATA_VAULT'),
+    ('dbo', 'Admin_Table', 'TableName', 1, 'varchar', 50, 0, 0, 1, 'ADMIN_TABLE', 'TABLE_NAME', 'VARCHAR(50)', 'SCANDS_Prod', 'DATA_VAULT'),
+    ('dbo', 'Admin_Table', 'DWLastUpdatedDate', 2, 'datetime', 8, 23, 3, 1, 'ADMIN_TABLE', 'DW_LAST_UPDATED_DATE', 'TIMESTAMP_NTZ(3)', 'SCANDS_Prod', 'DATA_VAULT'),
+    ('dbo', 'Admin_Table', 'TableID', 3, 'smallint', 2, 5, 0, 0, 'ADMIN_TABLE', 'TABLE_ID', 'SMALLINT', 'SCANDS_Prod', 'DATA_VAULT'),
+    ('dbo', 'B_AuthDiagnosis', 'AuthId', 1, 'varchar', 50, 0, 0, 1, 'BRIDGE_AUTH_DIAGNOSIS', 'AUTH_ID', 'VARCHAR(50)', 'SCANDS_Prod', 'DATA_VAULT'),
+    ('dbo', 'B_AuthDiagnosis', 'DiagnosisDesc', 10, 'varchar', 500, 0, 0, 1, 'BRIDGE_AUTH_DIAGNOSIS', 'DIAGNOSIS_DESC', 'VARCHAR(500)', 'SCANDS_Prod', 'DATA_VAULT'),
+    ('dbo', 'B_AuthDiagnosis', 'CreatedDate', 19, 'datetime', 8, 23, 3, 1, 'BRIDGE_AUTH_DIAGNOSIS', 'CREATED_DATE', 'TIMESTAMP_NTZ(3)', 'SCANDS_Prod', 'DATA_VAULT'),
+    ('dbo', 'B_AuthDiagnosis_BU_Final', 'DiagnosisCd', 9, 'varchar', 10, 0, 0, 1, 'BRIDGE_AUTH_DIAGNOSIS_BU_FINAL', 'DIAGNOSIS_CD', 'VARCHAR(10)', 'SCANDS_Prod', 'DATA_VAULT'),
+    ('dbo', 'B_ClaimAdjustmentSegment', 'ClaimID', 1, 'char', 12, 0, 0, 0, 'BRIDGE_CLAIM_ADJUSTMENT_SEGMENT', 'CLAIM_ID', 'CHAR(12)', 'SCANDS_Prod', 'DATA_VAULT'),
+    ('dbo', 'B_ClaimAdjustmentSegment', 'Amount', 6, 'money', 8, 19, 4, 1, 'BRIDGE_CLAIM_ADJUSTMENT_SEGMENT', 'AMOUNT', 'NUMBER(19,4)', 'SCANDS_Prod', 'DATA_VAULT');
 """,
     },
     {
@@ -1018,28 +1084,103 @@ CREATE OR REPLACE TABLE {table_ref} (
     IS_NULLABLE DECIMAL(38, 0),
     TARGET_TABLE_NAME VARCHAR(16777216),
     TARGET_COLUMN_NAME VARCHAR(16777216),
-    TARGET_DATA_TYPE VARCHAR(16777216)
+    TARGET_DATA_TYPE VARCHAR(16777216),
+    SOURCE_DATABASE VARCHAR(256) DEFAULT 'SCANDS_QualityRisk',
+    TARGET_DATABASE VARCHAR(256) DEFAULT 'DATA_VAULT'
 );
 """,
         "dml": """
 INSERT INTO {table_ref} (
     SOURCE_SCHEMA_NAME, SOURCE_TABLE_NAME, SOURCE_COLUMN_NAME, ORDINAL_POSITION,
     SOURCE_DATA_TYPE, MAX_LENGTH, PRECISION, SCALE, IS_NULLABLE,
-    TARGET_TABLE_NAME, TARGET_COLUMN_NAME, TARGET_DATA_TYPE
+    TARGET_TABLE_NAME, TARGET_COLUMN_NAME, TARGET_DATA_TYPE,
+    SOURCE_DATABASE, TARGET_DATABASE
 ) VALUES
-    ('dbo', 'Admin_SnapDate', 'SnapDate', 1, 'datetime', 8, 23, 3, 1, 'ADMIN_SNAP_DATE', 'SNAP_DATE', 'TIMESTAMP_NTZ(3)'),
-    ('dbo', 'B_QR_DeniedReferClaim', 'Mbr_Id', 1, 'varchar', 20, 0, 0, 1, 'BRIDGE_QR_DENIED_REFER_CLAIM', 'MBR_ID', 'VARCHAR(20)'),
-    ('dbo', 'B_QR_DeniedReferClaim', 'DeniedReferClaimCount', 7, 'int', 4, 10, 0, 1, 'BRIDGE_QR_DENIED_REFER_CLAIM', 'DENIED_REFER_CLAIM_COUNT', 'INT'),
-    ('dbo', 'B_QR_DeniedReferClaim', 'MostRecentFlag', 8, 'char', 1, 0, 0, 1, 'BRIDGE_QR_DENIED_REFER_CLAIM', 'MOST_RECENT_FLAG', 'CHAR(1)'),
-    ('dbo', 'B_QR_DeniedReferClaim', 'UpdatedDateTime', 14, 'datetime', 8, 23, 3, 1, 'BRIDGE_QR_DENIED_REFER_CLAIM', 'UPDATED_DATE_TIME', 'TIMESTAMP_NTZ(3)'),
-    ('dbo', 'B_QR_DeniedReferClaim', 'DeniedReferClaimSeqID', 26, 'varchar', 30, 0, 0, 1, 'BRIDGE_QR_DENIED_REFER_CLAIM', 'DENIED_REFER_CLAIM_SEQ_ID', 'VARCHAR(30)'),
-    ('dbo', 'B_QR_HCBSCkList', 'Mbr_Id', 1, 'varchar', 20, 0, 0, 1, 'BRIDGE_QR_HCBS_CK_LIST', 'MBR_ID', 'VARCHAR(20)'),
-    ('dbo', 'B_QR_HCBSCkList', 'EventCatName', 13, 'varchar', 1023, 0, 0, 1, 'BRIDGE_QR_HCBS_CK_LIST', 'EVENT_CAT_NAME', 'VARCHAR(1023)'),
-    ('dbo', 'B_QR_HCBSCkList', 'UpdatedDateTime', 18, 'datetime', 8, 23, 3, 1, 'BRIDGE_QR_HCBS_CK_LIST', 'UPDATED_DATE_TIME', 'TIMESTAMP_NTZ(3)'),
-    ('dbo', 'B_QR_InPersonInstitute', 'Mbr_Id', 1, 'varchar', 20, 0, 0, 1, 'BRIDGE_QR_IN_PERSON_INSTITUTE', 'MBR_ID', 'VARCHAR(20)'),
-    ('dbo', 'B_QR_InPersonInstitute', 'EventCatName', 13, 'varchar', 1023, 0, 0, 1, 'BRIDGE_QR_IN_PERSON_INSTITUTE', 'EVENT_CAT_NAME', 'VARCHAR(1023)'),
-    ('dbo', 'B_QR_InPersonInstitute', 'UpdatedDateTime', 18, 'datetime', 8, 23, 3, 1, 'BRIDGE_QR_IN_PERSON_INSTITUTE', 'UPDATED_DATE_TIME', 'TIMESTAMP_NTZ(3)');
+    ('dbo', 'Admin_SnapDate', 'SnapDate', 1, 'datetime', 8, 23, 3, 1, 'ADMIN_SNAP_DATE', 'SNAP_DATE', 'TIMESTAMP_NTZ(3)', 'SCANDS_QualityRisk', 'DATA_VAULT'),
+    ('dbo', 'B_QR_DeniedReferClaim', 'Mbr_Id', 1, 'varchar', 20, 0, 0, 1, 'BRIDGE_QR_DENIED_REFER_CLAIM', 'MBR_ID', 'VARCHAR(20)', 'SCANDS_QualityRisk', 'DATA_VAULT'),
+    ('dbo', 'B_QR_DeniedReferClaim', 'DeniedReferClaimCount', 7, 'int', 4, 10, 0, 1, 'BRIDGE_QR_DENIED_REFER_CLAIM', 'DENIED_REFER_CLAIM_COUNT', 'INT', 'SCANDS_QualityRisk', 'DATA_VAULT'),
+    ('dbo', 'B_QR_DeniedReferClaim', 'MostRecentFlag', 8, 'char', 1, 0, 0, 1, 'BRIDGE_QR_DENIED_REFER_CLAIM', 'MOST_RECENT_FLAG', 'CHAR(1)', 'SCANDS_QualityRisk', 'DATA_VAULT'),
+    ('dbo', 'B_QR_DeniedReferClaim', 'UpdatedDateTime', 14, 'datetime', 8, 23, 3, 1, 'BRIDGE_QR_DENIED_REFER_CLAIM', 'UPDATED_DATE_TIME', 'TIMESTAMP_NTZ(3)', 'SCANDS_QualityRisk', 'DATA_VAULT'),
+    ('dbo', 'B_QR_DeniedReferClaim', 'DeniedReferClaimSeqID', 26, 'varchar', 30, 0, 0, 1, 'BRIDGE_QR_DENIED_REFER_CLAIM', 'DENIED_REFER_CLAIM_SEQ_ID', 'VARCHAR(30)', 'SCANDS_QualityRisk', 'DATA_VAULT'),
+    ('dbo', 'B_QR_HCBSCkList', 'Mbr_Id', 1, 'varchar', 20, 0, 0, 1, 'BRIDGE_QR_HCBS_CK_LIST', 'MBR_ID', 'VARCHAR(20)', 'SCANDS_QualityRisk', 'DATA_VAULT'),
+    ('dbo', 'B_QR_HCBSCkList', 'EventCatName', 13, 'varchar', 1023, 0, 0, 1, 'BRIDGE_QR_HCBS_CK_LIST', 'EVENT_CAT_NAME', 'VARCHAR(1023)', 'SCANDS_QualityRisk', 'DATA_VAULT'),
+    ('dbo', 'B_QR_HCBSCkList', 'UpdatedDateTime', 18, 'datetime', 8, 23, 3, 1, 'BRIDGE_QR_HCBS_CK_LIST', 'UPDATED_DATE_TIME', 'TIMESTAMP_NTZ(3)', 'SCANDS_QualityRisk', 'DATA_VAULT'),
+    ('dbo', 'B_QR_InPersonInstitute', 'Mbr_Id', 1, 'varchar', 20, 0, 0, 1, 'BRIDGE_QR_IN_PERSON_INSTITUTE', 'MBR_ID', 'VARCHAR(20)', 'SCANDS_QualityRisk', 'DATA_VAULT'),
+    ('dbo', 'B_QR_InPersonInstitute', 'EventCatName', 13, 'varchar', 1023, 0, 0, 1, 'BRIDGE_QR_IN_PERSON_INSTITUTE', 'EVENT_CAT_NAME', 'VARCHAR(1023)', 'SCANDS_QualityRisk', 'DATA_VAULT'),
+    ('dbo', 'B_QR_InPersonInstitute', 'UpdatedDateTime', 18, 'datetime', 8, 23, 3, 1, 'BRIDGE_QR_IN_PERSON_INSTITUTE', 'UPDATED_DATE_TIME', 'TIMESTAMP_NTZ(3)', 'SCANDS_QualityRisk', 'DATA_VAULT');
+"""
+    },
+    {
+        "name": "MAPPING_RULES",
+        "description": "Naming and transformation rules for source-to-target mappings",
+        "date_column": "LAST_MODIFIED_DATE",
+        "ddl": """
+CREATE OR REPLACE TABLE {table_ref} (
+    RULE_ID VARCHAR(16777216),
+    RULE_NAME VARCHAR(256),
+    RULE_TYPE VARCHAR(50),
+    SOURCE_PATTERN VARCHAR(256),
+    TARGET_PATTERN VARCHAR(256),
+    DESCRIPTION VARCHAR(16777216),
+    EXAMPLE_SOURCE VARCHAR(256),
+    EXAMPLE_TARGET VARCHAR(256),
+    IS_ACTIVE BOOLEAN DEFAULT TRUE,
+    APPLIES_TO VARCHAR(50),
+    SORT_ORDER INTEGER DEFAULT 0,
+    CREATED_DATE TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    LAST_MODIFIED_DATE TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    CREATED_BY VARCHAR(255),
+    LAST_MODIFIED_BY VARCHAR(255)
+);
 """,
+        "dml": """
+INSERT INTO {table_ref} (
+    RULE_ID, RULE_NAME, RULE_TYPE, SOURCE_PATTERN, TARGET_PATTERN, DESCRIPTION,
+    EXAMPLE_SOURCE, EXAMPLE_TARGET, IS_ACTIVE, APPLIES_TO, SORT_ORDER,
+    CREATED_DATE, LAST_MODIFIED_DATE, CREATED_BY
+) VALUES
+    ('RULE_20250127_001', 'Fact Table Prefix', 'PREFIX_MAPPING', 'F_', 'Fact_', 'Convert F_ prefix to Fact_ prefix for fact tables', 'F_SalesTransactions', 'Fact_SalesTransactions', TRUE, 'TABLE', 1, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, 'system'),
+    ('RULE_20250127_002', 'Dimension Table Prefix', 'PREFIX_MAPPING', 'D_', 'Dim_', 'Convert D_ prefix to Dim_ prefix for dimension tables', 'D_Customer', 'Dim_Customer', TRUE, 'TABLE', 2, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, 'system'),
+    ('RULE_20250127_003', 'Table Case Conversion', 'CASE_CONVERSION', 'camelCase', 'UPPER_SNAKE_CASE', 'Convert camelCase table names to UPPER_SNAKE_CASE', 'CustomerAddress', 'CUSTOMER_ADDRESS', TRUE, 'TABLE', 3, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, 'system'),
+    ('RULE_20250127_004', 'Column Case Conversion', 'CASE_CONVERSION', 'camelCase', 'UPPER_SNAKE_CASE', 'Convert camelCase column names to UPPER_SNAKE_CASE', 'customerID', 'CUSTOMER_ID', TRUE, 'COLUMN', 4, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, 'system'),
+    ('RULE_20250127_005', 'Bridge Table Naming', 'PREFIX_MAPPING', 'BRIDGE_', 'Bridge_', 'Convert BRIDGE_ prefix to Bridge_ for bridge/junction tables', 'BRIDGE_OrderProduct', 'Bridge_OrderProduct', TRUE, 'TABLE', 5, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, 'system');
+"""
+    },
+    {
+        "name": "MAPPING_REVIEW_CORRECTIONS",
+        "description": "Tracks mapping corrections and review status for source-to-target mappings",
+        "date_column": "LAST_MODIFIED_DATE",
+        "ddl": """
+CREATE OR REPLACE TABLE {table_ref} (
+    MAPPING_ID VARCHAR(16777216),
+    OBJECT_TYPE VARCHAR(50),
+    SOURCE_TABLE_NAME VARCHAR(16777216),
+    SOURCE_COLUMN_NAME VARCHAR(16777216),
+    ORIGINAL_TARGET_NAME VARCHAR(16777216),
+    SUGGESTED_TARGET_NAME VARCHAR(16777216),
+    UPDATED_TARGET_NAME VARCHAR(16777216),
+    NEEDS_REVIEW BOOLEAN DEFAULT FALSE,
+    STATUS VARCHAR(50) DEFAULT 'PENDING',
+    CREATED_DATE TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    LAST_MODIFIED_DATE TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    CREATED_BY VARCHAR(255),
+    LAST_MODIFIED_BY VARCHAR(255),
+    NOTES VARCHAR(16777216)
+);
+""",
+        "dml": """
+INSERT INTO {table_ref} (
+    MAPPING_ID, OBJECT_TYPE, SOURCE_TABLE_NAME, SOURCE_COLUMN_NAME,
+    ORIGINAL_TARGET_NAME, SUGGESTED_TARGET_NAME, UPDATED_TARGET_NAME,
+    NEEDS_REVIEW, STATUS, CREATED_DATE, LAST_MODIFIED_DATE, CREATED_BY, NOTES
+) VALUES
+    ('MAP_20250127_001', 'TABLE', 'B_AuthDiagnosis_BU_Final', NULL, 'BRIDGE_AUTH_DIAGNOSIS_BU_FINAL', 'BRIDGE_AUTH_DIAGNOSIS_BU_FINAL', 'BRIDGE_AUTH_DIAGNOSIS_FINAL', TRUE, 'NEEDS_REVIEW', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, 'data_team', 'Review requested - naming convention mismatch'),
+    ('MAP_20250127_002', 'COLUMN', 'B_ClaimAdjustmentSegment', 'ClaimID', 'CLAIM_ID', 'CLAIM_ID', 'CLAIM_ID_PK', FALSE, 'MODIFIED', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, 'data_team', 'Updated to include _PK suffix for primary keys'),
+    ('MAP_20250127_003', 'TABLE', 'B_QR_DeniedReferClaim', NULL, 'BRIDGE_QR_DENIED_REFER_CLAIM', 'BRIDGE_QR_DENIED_REFER_CLAIM', NULL, TRUE, 'NEEDS_REVIEW', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, 'quality_team', 'Pending approval - complex mapping'),
+    ('MAP_20250127_004', 'COLUMN', 'Admin_SnapDate', 'SnapDate', 'SNAP_DATE', 'SNAP_DATE', 'SNAP_DATE_TIME', FALSE, 'MODIFIED', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, 'data_team', 'Changed to SNAP_DATE_TIME for clarity'),
+    ('MAP_20250127_005', 'TABLE', 'B_QR_HCBSCkList', NULL, 'BRIDGE_QR_HCBS_CK_LIST', 'BRIDGE_QR_HCBS_CHECKLIST', NULL, TRUE, 'NEEDS_REVIEW', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, 'quality_team', 'Discussion needed on abbreviation expansion'),
+    ('MAP_20250127_006', 'COLUMN', 'B_QR_HCBSCkList', 'EventCatName', 'EVENT_CAT_NAME', 'EVENT_CATEGORY_NAME', 'EVENT_CATEGORY_NAME', FALSE, 'MODIFIED', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, 'quality_team', 'Expanded abbreviation for consistency');
+"""
     },
 ]
 
@@ -1047,6 +1188,44 @@ INSERT INTO {table_ref} (
 def get_table_names() -> List[str]:
     """Return list of all test table names."""
     return [t["name"] for t in TEST_TABLES]
+
+
+# Tables that should only be created in local (DuckDB) test runs.
+# When running against Snowflake (deployed), these should be referenced
+# from the production location (DATA_VAULT_DEV.INFO_MART) instead of
+# being created by the test setup.
+LOCAL_ONLY_TABLES = {
+    "SCANDS_FINANCE_S2T",
+    "SCANDS_PROD_S2T",
+    "SCANDS_QUALITYRISK_S2T",
+}
+
+# Mock/Test data tables - sample data for demos and local testing
+MOCK_DATA_TABLES = {
+    "TESTTABLE",
+    "SAMPLE_DATA",
+    "DAILY_METRICS",
+}
+
+# Metadata/App storage tables - where the app persists its own configuration, audit logs, etc.
+METADATA_TABLES = {
+    "METADATA_CONFIG_TABLE_ELT",
+    "METADATA_CONFIG_TABLE_ELT_ADHOC",
+    "METADATA_CONFIG_TABLE_ELT_QUERY",
+    "VALIDATION_MODEL_RESULTS",
+    "VALIDATION_MODEL_RUNS",
+    "VALIDATION_METRICS_TARGET",
+    "VALIDATION_METRICS_SOURCE",
+    "TEAM_MEMBERS",
+    "VALIDATION_OBJECTS",
+    "ELT_LOAD_COMPARISON",
+    "METADATA_SQL_SERVER_LOOKUP",
+    "MAPPING_RULES",
+    "MAPPING_REVIEW_CORRECTIONS",
+    "SCANDS_FINANCE_S2T",
+    "SCANDS_PROD_S2T",
+    "SCANDS_QUALITYRISK_S2T",
+}
 
 
 def get_table_date_column(table_name: str) -> Optional[str]:
@@ -1071,12 +1250,13 @@ def format_ddl(table_name: str, schema_prefix: str = "") -> str:
     
     Args:
         table_name: Name of the table
-        schema_prefix: Optional schema prefix (e.g., "DATA_VAULT_DEV.INFO_MART")
+        schema_prefix: Optional schema prefix (uses default DATA_VAULT_TEMP.MIGRATION for test tables)
     
     Returns:
         Formatted DDL statement
     """
     defn = get_table_definition(table_name)
+    # All test tables are created in DATA_VAULT_TEMP.MIGRATION (temp workspace for development/testing)
     if schema_prefix:
         table_ref = f"{schema_prefix}.{table_name}"
     else:
@@ -1093,12 +1273,16 @@ def format_dml(table_name: str, schema_prefix: str = "") -> str:
     
     Args:
         table_name: Name of the table
-        schema_prefix: Optional schema prefix (e.g., "DATA_VAULT_DEV.INFO_MART")
+        schema_prefix: Optional schema prefix (uses default DATA_VAULT_TEMP.MIGRATION for test tables)
     
     Returns:
         Formatted DML statement
     """
     defn = get_table_definition(table_name)
+    # Views don't have DML - return empty string
+    if "dml" not in defn:
+        return ""
+    # All test tables are created in DATA_VAULT_TEMP.MIGRATION (temp workspace for development/testing)
     if schema_prefix:
         table_ref = f"{schema_prefix}.{table_name}"
     else:
@@ -1121,3 +1305,82 @@ def get_all_ddl(schema_prefix: str = "") -> List[str]:
 def get_all_dml(schema_prefix: str = "") -> List[str]:
     """Get all DML statements for all test tables."""
     return [format_dml(t["name"], schema_prefix) for t in TEST_TABLES]
+
+
+def get_mock_data_tables() -> List[Dict[str, Any]]:
+    """Get mock/test data table definitions."""
+    return [t for t in TEST_TABLES if t["name"].upper() in MOCK_DATA_TABLES]
+
+
+def get_metadata_tables() -> List[Dict[str, Any]]:
+    """Get metadata/app storage table definitions."""
+    return [t for t in TEST_TABLES if t["name"].upper() in METADATA_TABLES]
+
+
+def get_setup_sql_statements(
+    table_list: List[Dict[str, Any]],
+    schema_prefix: str = "",
+    include_dml: bool = True,
+) -> Dict[str, str]:
+    """
+    Generate DDL and DML statements for a list of tables.
+    
+    Args:
+        table_list: List of table definitions
+        schema_prefix: Schema prefix for Snowflake (e.g., "DATA_VAULT_DEV.INFO_MART")
+        include_dml: Whether to include DML (INSERT statements)
+    
+    Returns:
+        Dictionary mapping table name to combined DDL + DML as a single string
+    """
+    statements = {}
+    for table_def in table_list:
+        table_name = table_def["name"]
+        ddl = format_ddl(table_name, schema_prefix)
+        dml = format_dml(table_name, schema_prefix) if include_dml else ""
+        # Combine DDL and DML
+        combined = f"{ddl}\n\n{dml}" if dml else ddl
+        statements[table_name] = combined
+    return statements
+
+
+def get_all_setup_sql(schema_prefix: str = "") -> str:
+    """Get all DDL+DML statements concatenated for "Setup All Data"."""
+    statements = []
+    for table_def in TEST_TABLES:
+        table_name = table_def["name"]
+        ddl = format_ddl(table_name, schema_prefix)
+        dml = format_dml(table_name, schema_prefix)
+        if dml:
+            statements.append(f"{ddl}\n\n{dml}")
+        else:
+            statements.append(ddl)
+    return "\n\n".join(statements)
+
+
+def get_mock_data_setup_sql(schema_prefix: str = "") -> str:
+    """Get DDL+DML statements for mock data tables only."""
+    statements = []
+    for table_def in get_mock_data_tables():
+        table_name = table_def["name"]
+        ddl = format_ddl(table_name, schema_prefix)
+        dml = format_dml(table_name, schema_prefix)
+        if dml:
+            statements.append(f"{ddl}\n\n{dml}")
+        else:
+            statements.append(ddl)
+    return "\n\n".join(statements)
+
+
+def get_metadata_setup_sql(schema_prefix: str = "") -> str:
+    """Get DDL+DML statements for metadata tables only."""
+    statements = []
+    for table_def in get_metadata_tables():
+        table_name = table_def["name"]
+        ddl = format_ddl(table_name, schema_prefix)
+        dml = format_dml(table_name, schema_prefix)
+        if dml:
+            statements.append(f"{ddl}\n\n{dml}")
+        else:
+            statements.append(ddl)
+    return "\n\n".join(statements)

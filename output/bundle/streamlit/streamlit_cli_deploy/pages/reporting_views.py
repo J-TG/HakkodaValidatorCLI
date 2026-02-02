@@ -47,11 +47,28 @@ def main() -> None:
         st.info("Connect to Snowflake to execute; preview still works.")
 
     with st.form("reporting_view_form"):
-        env = st.selectbox("Environment", ["DEV", "TEST", "UAT", "PROD"], index=0)
+        env = st.selectbox(
+            "Environment",
+            ["DEV", "TEST", "UAT", "PROD"],
+            index=0,
+            help="Select the target environment. This determines the source database (STAGE_<ENV>).",
+        )
         col1, col2 = st.columns(2)
-        source_table = col1.text_input("Source Table", value="MY_SOURCE_TABLE")
-        source_schema = col2.text_input("Source Schema", value=DEFAULT_SOURCE_SCHEMA)
-        view_name = st.text_input("View Name", value="MY_REPORTING_VIEW")
+        source_table = col1.text_input(
+            "Source Table",
+            value="MY_SOURCE_TABLE",
+            help="The name of the table in the source STAGE database to select from.",
+        )
+        source_schema = col2.text_input(
+            "Source Schema",
+            value=DEFAULT_SOURCE_SCHEMA,
+            help="The schema within the STAGE database that contains the source table.",
+        )
+        view_name = st.text_input(
+            "View Name",
+            value="MY_REPORTING_VIEW",
+            help="The name for the new reporting view in DATA_VAULT_DEV.INFO_MART.",
+        )
         submitted = st.form_submit_button("Preview SQL")
 
     if not submitted:

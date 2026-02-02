@@ -228,6 +228,69 @@ def _render_health_charts(
             cols[1].altair_chart(charts[i + 1], theme=None)
 
 
+def _render_scheduled_adhoc(conn, mode: str) -> None:
+    """Render the Scheduled - Adhoc tab showing all adhoc triggers."""
+    st.markdown("### Scheduled Adhoc Jobs")
+    st.caption("All adhoc triggers from METADATA_CONFIG_TABLE_ELT_ADHOC_VW")
+    
+    if conn is None:
+        st.info("Connect to Snowflake or DuckDB to view scheduled adhoc jobs.")
+        return
+    
+    if mode == "duckdb":
+        view_ref = "METADATA_CONFIG_TABLE_ELT_ADHOC_VW"
+        # Check if view exists
+        try:
+            run_query(conn, f"SELECT 1 FROM {view_ref} LIMIT 1", mode)
+        except Exception:
+            st.info("Adhoc view not yet created. Use 'Setup Test Data' button on the Home page.")
+            return
+    else:
+        view_ref = "DATA_VAULT_TEMP.MIGRATION.METADATA_CONFIG_TABLE_ELT_ADHOC_VW"
+    
+    query = (
+        f"SELECT METADATA_CONFIG_KEY, LOGICAL_NAME, DATABASE_NAME, SCHEMA_NAME, SOURCE_TABLE_NAME, "
+        f"LOAD_START_DATETIME, LOAD_END_DATETIME, LAST_TRIGGER_TIMESTAMP, ERROR_STATUS, ENVIRONMENT "
+        f"FROM {view_ref} "
+        "ORDER BY LAST_TRIGGER_TIMESTAMP DESC LIMIT 200"
+    )
+    
+    with st.expander("View Raw Query", expanded=False):
+        st.code(query, language="sql")
+    
+    df = _fetch_df(conn, mode, query)
+    
+    if df.empty:
+        st.info("No scheduled adhoc jobs found. Use the Ingestion Copilot to create adhoc triggers.")
+        return
+    
+    # Summary metrics
+    total_jobs = len(df)
+    completed = len(df[df["ERROR_STATUS"].str.upper() == "COMPLETED"]) if "ERROR_STATUS" in df.columns else 0
+    pending = len(df[df["ERROR_STATUS"].str.upper().str.contains("TRIGGERED|NOT_STARTED", na=False)]) if "ERROR_STATUS" in df.columns else 0
+    failed = len(df[df["ERROR_STATUS"].str.upper().str.contains("ERROR|FAILED", na=False)]) if "ERROR_STATUS" in df.columns else 0
+    
+    col1, col2, col3, col4 = st.columns(4)
+    col1.metric("Total Jobs", f"{total_jobs}")
+    col2.metric("Completed", f"{completed}")
+    col3.metric("Pending", f"{pending}")
+    col4.metric("Failed", f"{failed}")
+    
+    # Filter by status
+    status_filter = st.selectbox(
+        "Filter by Status",
+        options=["All", "COMPLETED", "TRIGGERED_NOT_STARTED", "ERROR", "FAILED"],
+        index=0
+    )
+    
+    filtered_df = df.copy()
+    if status_filter != "All" and "ERROR_STATUS" in filtered_df.columns:
+        filtered_df = filtered_df[filtered_df["ERROR_STATUS"].str.upper().str.contains(status_filter, na=False)]
+    
+    st.caption(f"Showing {len(filtered_df)} of {total_jobs} jobs")
+    st.dataframe(filtered_df, width="stretch", hide_index=True, height=500)
+
+
 def main():
     conn = init_page()
     mode = get_runtime_mode()
@@ -235,131 +298,150 @@ def main():
     st.title("📥 Ingestion Monitoring")
     st.caption("Job run metrics from ELT_JOB_RUN and rollups.")
 
-    env_options = ["DEV", "TEST", "UAT", "PROD"]
-    selected_envs = st.multiselect(
-        "Environments",
-        options=env_options,
-        default=env_options,
-        help="Choose which environments to include in the summary view.",
-    )
-    show_combined = st.checkbox(
-        "Show combined summary for selected environments",
-        value=True,
-        help="When checked, the summary aggregates all selected environments. Tabs below always show one environment at a time.",
-    )
+    # Main tabs: Health Check vs Scheduled - Adhoc
+    main_tab1, main_tab2 = st.tabs(["🩺 Health Check", "📅 Scheduled - Adhoc"])
+    
+    with main_tab2:
+        _render_scheduled_adhoc(conn, mode)
+    
+    with main_tab1:
+        env_options = ["DEV", "TEST", "UAT", "PROD"]
+        selected_envs = st.multiselect(
+            "Environments",
+            options=env_options,
+            default=env_options,
+            help="Choose which environments to include in the summary view.",
+        )
+        show_combined = st.checkbox(
+            "Show combined summary for selected environments",
+            value=True,
+            help="When checked, the summary aggregates all selected environments. Tabs below always show one environment at a time.",
+        )
 
-    if conn is None:
-        st.info("Connect to DuckDB or Snowflake to view metrics.")
-        return
+        if conn is None:
+            st.info("Connect to DuckDB or Snowflake to view metrics.")
+            return
 
-    job_table = _table_ref("ELT_JOB_RUN", mode)
-    metrics_view = _table_ref("ELT_JOB_RUN_METRICS_VW", mode)
-    job_daily_view = _table_ref("ELT_JOB_RUN_DAILY_VW", mode)
-    env_summary_view = _table_ref("ELT_ENVIRONMENT_SUMMARY_24H_VW", mode)
-    load_summary_view = _table_ref("ELT_LOAD_LOG_SUMMARY_VW", mode)
-    load_last_view = _table_ref("ELT_LOAD_LOG_LAST_RUN_VW", mode)
-    load_errors_view = _table_ref("ELT_LOAD_LOG_ERROR_DAILY_VW", mode)
-    error_daily_view = _table_ref("ELT_ERROR_LOG_DAILY_VW", mode)
-    error_top_view = _table_ref("ELT_ERROR_LOG_TOP_MESSAGES_VW", mode)
-    error_last_view = _table_ref("ELT_ERROR_LOG_LAST_VW", mode)
+        job_table = _table_ref("ELT_JOB_RUN", mode)
+        metrics_view = _table_ref("ELT_JOB_RUN_METRICS_VW", mode)
+        job_daily_view = _table_ref("ELT_JOB_RUN_DAILY_VW", mode)
+        env_summary_view = _table_ref("ELT_ENVIRONMENT_SUMMARY_24H_VW", mode)
+        load_summary_view = _table_ref("ELT_LOAD_LOG_SUMMARY_VW", mode)
+        load_last_view = _table_ref("ELT_LOAD_LOG_LAST_RUN_VW", mode)
+        load_errors_view = _table_ref("ELT_LOAD_LOG_ERROR_DAILY_VW", mode)
+        error_daily_view = _table_ref("ELT_ERROR_LOG_DAILY_VW", mode)
+        error_top_view = _table_ref("ELT_ERROR_LOG_TOP_MESSAGES_VW", mode)
+        error_last_view = _table_ref("ELT_ERROR_LOG_LAST_VW", mode)
 
-    runs_sql = f"""
+        runs_sql = f"""
 SELECT RUN_ID, START_TIME, END_TIME, STATUS, ROWS_PROCESSED, ERROR_COUNT, EXECUTION_TIME, TRIGGER_SOURCE
 FROM {job_table}
 ORDER BY START_TIME DESC
 LIMIT 50
 """
 
-    rollup_sql = f"SELECT * FROM {metrics_view} ORDER BY TRIGGER_SOURCE, STATUS"
-    job_daily_sql = f"SELECT * FROM {job_daily_view} ORDER BY RUN_DATE"
-    env_summary_sql = f"SELECT * FROM {env_summary_view}"
-    load_summary_sql = f"SELECT * FROM {load_summary_view}"
-    load_last_sql = f"SELECT * FROM {load_last_view}"
-    load_errors_sql = f"SELECT * FROM {load_errors_view}"
-    error_daily_sql = f"SELECT * FROM {error_daily_view}"
-    error_top_sql = f"SELECT * FROM {error_top_view}"
-    error_last_sql = f"SELECT * FROM {error_last_view}"
+        rollup_sql = f"SELECT * FROM {metrics_view} ORDER BY TRIGGER_SOURCE, STATUS"
+        job_daily_sql = f"SELECT * FROM {job_daily_view} ORDER BY RUN_DATE"
+        env_summary_sql = f"SELECT * FROM {env_summary_view}"
+        load_summary_sql = f"SELECT * FROM {load_summary_view}"
+        load_last_sql = f"SELECT * FROM {load_last_view}"
+        load_errors_sql = f"SELECT * FROM {load_errors_view}"
+        error_daily_sql = f"SELECT * FROM {error_daily_view}"
+        error_top_sql = f"SELECT * FROM {error_top_view}"
+        error_last_sql = f"SELECT * FROM {error_last_view}"
 
-    df_runs = _fetch_df(conn, mode, runs_sql)
-    df_rollup = _fetch_df(conn, mode, rollup_sql)
-    df_job_daily = _fetch_df(conn, mode, job_daily_sql)
-    df_env_summary = _fetch_df(conn, mode, env_summary_sql)
-    df_load_summary = _fetch_df(conn, mode, load_summary_sql)
-    df_load_last = _fetch_df(conn, mode, load_last_sql)
-    df_load_errors = _fetch_df(conn, mode, load_errors_sql)
-    df_error_daily = _fetch_df(conn, mode, error_daily_sql)
-    df_error_top = _fetch_df(conn, mode, error_top_sql)
-    df_error_last = _fetch_df(conn, mode, error_last_sql)
+        df_runs = _fetch_df(conn, mode, runs_sql)
+        df_rollup = _fetch_df(conn, mode, rollup_sql)
+        df_job_daily = _fetch_df(conn, mode, job_daily_sql)
+        df_env_summary = _fetch_df(conn, mode, env_summary_sql)
 
-    if df_runs.empty:
-        st.info("No job run data available. Run test data setup to seed ELT_JOB_RUN.")
-        return
+        # Fallback: if the environment summary is missing (common in some deployments),
+        # try the explicit Snowflake prefixed FQN and warn if still missing.
+        if df_env_summary.empty and mode != "duckdb":
+            alt_ref = f"{get_snowflake_table_prefix()}.ELT_ENVIRONMENT_SUMMARY_24H_VW"
+            alt_sql = f"SELECT * FROM {alt_ref}"
+            alt_df = _fetch_df(conn, mode, alt_sql)
+            if not alt_df.empty:
+                df_env_summary = alt_df
+            else:
+                st.warning(f"ELT_ENVIRONMENT_SUMMARY_24H_VW not found at {alt_ref}. Create the view or update table prefix.")
 
-    def _filter_env(df: pd.DataFrame, envs: list[str]) -> pd.DataFrame:
-        if df.empty or "ENVIRONMENT" not in df.columns:
-            return df
-        return df[df["ENVIRONMENT"].str.upper().isin(envs)]
+        df_load_summary = _fetch_df(conn, mode, load_summary_sql)
+        df_load_last = _fetch_df(conn, mode, load_last_sql)
+        df_load_errors = _fetch_df(conn, mode, load_errors_sql)
+        df_error_daily = _fetch_df(conn, mode, error_daily_sql)
+        df_error_top = _fetch_df(conn, mode, error_top_sql)
+        df_error_last = _fetch_df(conn, mode, error_last_sql)
 
-    # Combined summary for selected environments (if available)
-    if show_combined:
-        st.markdown("### Summary (Selected Environments)")
-        _render_env_summary(_filter_env(df_env_summary, selected_envs))
-        st.divider()
-        _render_health_charts(
-            _filter_env(df_job_daily, selected_envs),
-            _filter_env(df_rollup, selected_envs),
-            _filter_env(df_load_errors, selected_envs),
-            _filter_env(df_error_daily, selected_envs),
-        )
-        st.divider()
-        _render_metrics(_filter_env(df_runs, selected_envs), _filter_env(df_rollup, selected_envs))
-        st.divider()
-        _render_recent(_filter_env(df_runs, selected_envs))
-        st.divider()
-        _render_load_metrics(
-            _filter_env(df_load_summary, selected_envs),
-            _filter_env(df_load_last, selected_envs),
-            _filter_env(df_load_errors, selected_envs),
-        )
-        st.divider()
-        _render_error_metrics(
-            _filter_env(df_error_daily, selected_envs),
-            _filter_env(df_error_top, selected_envs),
-            _filter_env(df_error_last, selected_envs),
-        )
+        if df_runs.empty:
+            st.info("No job run data available. Run test data setup to seed ELT_JOB_RUN.")
+            return
 
-    # Environment-specific tabs
-    tabs = st.tabs(env_options)
-    for env, tab in zip(env_options, tabs):
-        with tab:
-            st.markdown(f"#### {env} Environment")
-            env_filter = [env]
-            _render_env_summary(_filter_env(df_env_summary, env_filter))
+        def _filter_env(df: pd.DataFrame, envs: list[str]) -> pd.DataFrame:
+            if df.empty or "ENVIRONMENT" not in df.columns:
+                return df
+            return df[df["ENVIRONMENT"].str.upper().isin(envs)]
+
+        # Combined summary for selected environments (if available)
+        if show_combined:
+            st.markdown("### Summary (Selected Environments)")
+            _render_env_summary(_filter_env(df_env_summary, selected_envs))
             st.divider()
             _render_health_charts(
-                _filter_env(df_job_daily, env_filter),
-                _filter_env(df_rollup, env_filter),
-                _filter_env(df_load_errors, env_filter),
-                _filter_env(df_error_daily, env_filter),
+                _filter_env(df_job_daily, selected_envs),
+                _filter_env(df_rollup, selected_envs),
+                _filter_env(df_load_errors, selected_envs),
+                _filter_env(df_error_daily, selected_envs),
             )
             st.divider()
-            _render_metrics(
-                _filter_env(df_runs, env_filter), _filter_env(df_rollup, env_filter)
-            )
+            _render_metrics(_filter_env(df_runs, selected_envs), _filter_env(df_rollup, selected_envs))
             st.divider()
-            _render_recent(_filter_env(df_runs, env_filter))
+            _render_recent(_filter_env(df_runs, selected_envs))
             st.divider()
             _render_load_metrics(
-                _filter_env(df_load_summary, env_filter),
-                _filter_env(df_load_last, env_filter),
-                _filter_env(df_load_errors, env_filter),
+                _filter_env(df_load_summary, selected_envs),
+                _filter_env(df_load_last, selected_envs),
+                _filter_env(df_load_errors, selected_envs),
             )
             st.divider()
             _render_error_metrics(
-                _filter_env(df_error_daily, env_filter),
-                _filter_env(df_error_top, env_filter),
-                _filter_env(df_error_last, env_filter),
+                _filter_env(df_error_daily, selected_envs),
+                _filter_env(df_error_top, selected_envs),
+                _filter_env(df_error_last, selected_envs),
             )
+
+        # Environment-specific tabs
+        tabs = st.tabs(env_options)
+        for env, tab in zip(env_options, tabs):
+            with tab:
+                st.markdown(f"#### {env} Environment")
+                env_filter = [env]
+                _render_env_summary(_filter_env(df_env_summary, env_filter))
+                st.divider()
+                _render_health_charts(
+                    _filter_env(df_job_daily, env_filter),
+                    _filter_env(df_rollup, env_filter),
+                    _filter_env(df_load_errors, env_filter),
+                    _filter_env(df_error_daily, env_filter),
+                )
+                st.divider()
+                _render_metrics(
+                    _filter_env(df_runs, env_filter), _filter_env(df_rollup, env_filter)
+                )
+                st.divider()
+                _render_recent(_filter_env(df_runs, env_filter))
+                st.divider()
+                _render_load_metrics(
+                    _filter_env(df_load_summary, env_filter),
+                    _filter_env(df_load_last, env_filter),
+                    _filter_env(df_load_errors, env_filter),
+                )
+                st.divider()
+                _render_error_metrics(
+                    _filter_env(df_error_daily, env_filter),
+                    _filter_env(df_error_top, env_filter),
+                    _filter_env(df_error_last, env_filter),
+                )
 
 
 main()

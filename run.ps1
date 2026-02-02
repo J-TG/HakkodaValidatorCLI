@@ -15,7 +15,7 @@
 
 param(
     [Parameter(Position=0)]
-    [ValidateSet('help', 'run-duckdb', 'run-snowflake', 'configure-snowflake', 'print-env', 
+    [ValidateSet('help', 'run-duckdb', 'run-light', 'run-snowflake', 'configure-snowflake', 'print-env', 
                  'deploy-snowflake', 'get-snowflake-url', 'validate-snowflake-env', 
                  'upload-stage', 'clean')]
     [string]$Command = 'help'
@@ -40,6 +40,7 @@ function Import-EnvFile {
 function Show-Help {
     Write-Host "Available commands:" -ForegroundColor Cyan
     Write-Host "  run-duckdb            Run Streamlit with DuckDB (in-memory)"
+    Write-Host "  run-light             Run Streamlit with DuckDB (fast start, no pip install)"
     Write-Host "  run-snowflake         Run Streamlit connecting to Snowflake"
     Write-Host "  configure-snowflake   Configure Snowflake CLI connection (interactive)"
     Write-Host "  print-env             Print loaded env vars (local + snowflake)"
@@ -60,6 +61,16 @@ function Invoke-RunDuckDB {
     Import-EnvFile ".env.duckdb"
 
     Write-Host "Running Streamlit app with DuckDB (in-memory)" -ForegroundColor Green
+    $env:RUNTIME_MODE = "duckdb"
+    streamlit run streamlit_app.py
+}
+
+function Invoke-RunLight {
+    Write-Host "Loading .env.local and .env.duckdb (if present)" -ForegroundColor Yellow
+    Import-EnvFile ".env.local"
+    Import-EnvFile ".env.duckdb"
+
+    Write-Host "Running Streamlit app with DuckDB (fast start, no pip install)" -ForegroundColor Green
     $env:RUNTIME_MODE = "duckdb"
     streamlit run streamlit_app.py
 }
@@ -170,6 +181,27 @@ function Invoke-DeploySnowflake {
 
     Write-Host "Fetching Streamlit app URL..." -ForegroundColor Yellow
     snow streamlit get-url $env:SF_DEPLOY_APP
+
+    # Share the app with roles from .env.deploy-permissions
+    $permissionsFile = ".env.deploy-permissions"
+    if (Test-Path $permissionsFile) {
+        Write-Host "Sharing Streamlit app with roles from $permissionsFile..." -ForegroundColor Yellow
+        Get-Content $permissionsFile | ForEach-Object {
+            $line = $_.Trim()
+            # Skip empty lines and comments
+            if ($line -and -not $line.StartsWith('#')) {
+                Write-Host "  Sharing with role: $line" -ForegroundColor Cyan
+                snow streamlit share `
+                    --database $env:SF_DEPLOY_DATABASE `
+                    --schema $env:SF_DEPLOY_SCHEMA `
+                    $env:SF_DEPLOY_APP `
+                    $line
+            }
+        }
+        Write-Host "App shared with all configured roles." -ForegroundColor Green
+    } else {
+        Write-Host "No $permissionsFile file found. Skipping role sharing." -ForegroundColor Yellow
+    }
 }
 
 function Get-SnowflakeUrl {
@@ -206,6 +238,7 @@ function Invoke-Clean {
 switch ($Command) {
     'help'                  { Show-Help }
     'run-duckdb'            { Invoke-RunDuckDB }
+    'run-light'             { Invoke-RunLight }
     'run-snowflake'         { Invoke-RunSnowflake }
     'configure-snowflake'   { Invoke-ConfigureSnowflake }
     'print-env'             { Show-Env }

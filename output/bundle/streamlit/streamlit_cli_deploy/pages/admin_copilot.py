@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 from typing import Any, Dict, List, Tuple
+from datetime import datetime, date, time, timedelta
+import uuid
 
 import streamlit as st
 
@@ -14,6 +16,7 @@ from common.ingestion_templates import (
     INGESTION_ENVIRONMENTS,
     build_adhoc_insert_sql,
     build_schedule_update_sql,
+    build_schedule_sets_and_call,
 )
 
 
@@ -100,6 +103,15 @@ SOURCE_TYPE_CARD_STYLES = """
 
 def _get_requester() -> str:
     return st.session_state.get("user_email", "streamlit_user")
+
+
+def _table_exists(conn: Any, table_name: str, runtime_mode: str = "duckdb") -> bool:
+    """Check if a table or view exists by attempting to query it."""
+    try:
+        run_query(conn, f"SELECT 1 FROM {table_name} LIMIT 1", runtime_mode)
+        return True
+    except Exception:
+        return False
 
 
 def _render_source_type_palette(active_label: str) -> None:
@@ -261,6 +273,21 @@ def _render_ingestion_builder(conn: Any, runtime_mode: str) -> None:
             index=0 if not adhoc_allowed else 0,
             help="Scheduled runs use INSERT_METADATA_CONFIG_TABLE. Adhoc queues an on-demand trigger where supported (DEV/TEST/UAT).",
         )
+        # When scheduled runs are selected, allow the user to pick a start/stop window
+        schedule_start_dt = None
+        schedule_stop_dt = None
+        if schedule_mode == "Scheduled":
+            col_start, col_stop = st.columns(2)
+            today = datetime.now().date()
+            default_start_date = today
+            default_stop_date = today + timedelta(days=3)
+            start_date = col_start.date_input("Schedule Start Date", value=default_start_date)
+            start_time = col_start.time_input("Start Time", value=time(hour=0, minute=0))
+            stop_date = col_stop.date_input("Schedule Stop Date", value=default_stop_date)
+            stop_time = col_stop.time_input("Stop Time", value=time(hour=0, minute=0))
+            # combine into datetimes for later use
+            schedule_start_dt = datetime.combine(start_date, start_time)
+            schedule_stop_dt = datetime.combine(stop_date, stop_time)
         sql_defaults = SQL_SERVER_DEFAULTS
         picklist_options = [manual_picklist_label] + [opt["SOURCE_LABEL"] for opt in sql_source_options]
         selected_label = st.selectbox(
@@ -415,9 +442,136 @@ def _render_ingestion_builder(conn: Any, runtime_mode: str) -> None:
             help="When on, ENABLED is set to '1'; when off, it is set to '0'.",
         )
 
-        submitted = st.form_submit_button("Generate SQL")
+        col_submit, col_show = st.columns([1, 1])
+        with col_submit:
+            generate_sql = st.form_submit_button("Generate SQL")
+        with col_show:
+            show_last_runs = st.form_submit_button("Show last runs")
 
-    if not submitted:
+        # If the user asked to show last runs, run that query and return early.
+        if show_last_runs:
+            tbl = (source_table_name or "").strip()
+            if runtime_mode == "duckdb":
+                # Detect which local tables exist and build an appropriate query.
+                adhoc_table = "METADATA_CONFIG_TABLE_ELT_ADHOC"
+                audit_candidates = ["AUDIT_LOG", "ELT_LOAD_LOG"]
+
+                adhoc_exists = _table_exists(conn, adhoc_table, runtime_mode)
+                audit_found = None
+                for cand in audit_candidates:
+                    if _table_exists(conn, cand, runtime_mode):
+                        audit_found = cand
+                        break
+
+                if adhoc_exists and audit_found:
+                    sql = f"""
+SELECT
+    m.METADATA_CONFIG_KEY,
+    m.LOGICAL_NAME,
+    m.DATABASE_NAME AS SOURCE_DATABASE,
+    m.SCHEMA_NAME AS SOURCE_SCHEMA,
+    m.SOURCE_TABLE_NAME AS SOURCE_TABLE,
+    'ADHOC' AS RUN_SOURCE,
+    a.LOAD_START_DATETIME AS RUN_START_DATETIME,
+    a.LOAD_END_DATETIME AS RUN_END_DATETIME,
+    a.LAST_TRIGGER_TIMESTAMP AS RUN_TS
+FROM METADATA_CONFIG_TABLE_ELT AS m
+JOIN {adhoc_table} AS a
+    ON m.METADATA_CONFIG_KEY = a.METADATA_CONFIG_KEY
+WHERE UPPER(COALESCE(m.SOURCE_TABLE_NAME, '')) = UPPER('{tbl}')
+
+UNION ALL
+
+SELECT
+    m.METADATA_CONFIG_KEY,
+    m.LOGICAL_NAME,
+    '' AS SOURCE_DATABASE,
+    '' AS SOURCE_SCHEMA,
+    COALESCE(al.LOAD_NAME, al.LOAD_ID, '') AS SOURCE_TABLE,
+    'AUDIT' AS RUN_SOURCE,
+    al.LOAD_START_TIME AS RUN_START_DATETIME,
+    al.LOAD_END_TIME AS RUN_END_DATETIME,
+    al.LOAD_START_TIME AS RUN_TS
+FROM METADATA_CONFIG_TABLE_ELT AS m
+JOIN {audit_found} AS al
+    ON UPPER(COALESCE(m.SOURCE_TABLE_NAME, '')) = UPPER(COALESCE(al.LOAD_NAME, al.LOAD_ID, ''))
+WHERE UPPER(COALESCE(al.LOAD_NAME, al.LOAD_ID, '')) = UPPER('{tbl}')
+ORDER BY RUN_TS DESC
+LIMIT 20
+"""
+                elif adhoc_exists:
+                    sql = f"""
+SELECT
+    m.METADATA_CONFIG_KEY,
+    m.LOGICAL_NAME,
+    m.DATABASE_NAME AS SOURCE_DATABASE,
+    m.SCHEMA_NAME AS SOURCE_SCHEMA,
+    m.SOURCE_TABLE_NAME AS SOURCE_TABLE,
+    'ADHOC' AS RUN_SOURCE,
+    a.LOAD_START_DATETIME AS RUN_START_DATETIME,
+    a.LOAD_END_DATETIME AS RUN_END_DATETIME,
+    a.LAST_TRIGGER_TIMESTAMP AS RUN_TS
+FROM METADATA_CONFIG_TABLE_ELT AS m
+JOIN {adhoc_table} AS a
+    ON m.METADATA_CONFIG_KEY = a.METADATA_CONFIG_KEY
+WHERE UPPER(COALESCE(m.SOURCE_TABLE_NAME, '')) = UPPER('{tbl}')
+ORDER BY RUN_TS DESC
+LIMIT 20
+"""
+                elif audit_found:
+                    sql = f"""
+SELECT
+    m.METADATA_CONFIG_KEY,
+    m.LOGICAL_NAME,
+    '' AS SOURCE_DATABASE,
+    '' AS SOURCE_SCHEMA,
+    COALESCE(al.LOAD_NAME, al.LOAD_ID, '') AS SOURCE_TABLE,
+    'AUDIT' AS RUN_SOURCE,
+    al.LOAD_START_TIME AS RUN_START_DATETIME,
+    al.LOAD_END_TIME AS RUN_END_DATETIME,
+    al.LOAD_START_TIME AS RUN_TS
+FROM METADATA_CONFIG_TABLE_ELT AS m
+JOIN {audit_found} AS al
+    ON UPPER(COALESCE(m.SOURCE_TABLE_NAME, '')) = UPPER(COALESCE(al.LOAD_NAME, al.LOAD_ID, ''))
+WHERE UPPER(COALESCE(al.LOAD_NAME, al.LOAD_ID, '')) = UPPER('{tbl}')
+ORDER BY RUN_TS DESC
+LIMIT 20
+"""
+                else:
+                    st.info("No adhoc or audit run tables exist in this DuckDB test dataset. Run Test Data setup to seed them.")
+                    return
+            else:
+                view_ref = "DATA_VAULT_TEMP.MIGRATION.METADATA_CONFIG_TABLE_ELT_ADHOC_VW"
+                sql = (
+                    f"SELECT METADATA_CONFIG_KEY, LOGICAL_NAME, DATABASE_NAME, SCHEMA_NAME, SOURCE_TABLE_NAME, "
+                    f"LOAD_START_DATETIME, LOAD_END_DATETIME, LAST_TRIGGER_TIMESTAMP, ERROR_STATUS, ENVIRONMENT "
+                    f"FROM {view_ref} "
+                    f"WHERE UPPER(COALESCE(SOURCE_TABLE_NAME, '')) = UPPER('{tbl}') "
+                    "ORDER BY LAST_TRIGGER_TIMESTAMP DESC LIMIT 20"
+                )
+
+            with st.expander("Preview query", expanded=False):
+                st.code(sql, language="sql")
+
+            if conn is None:
+                st.info("Connect to Snowflake to run this query and see recent runs.")
+                return
+
+            try:
+                df_runs = run_query(conn, sql, runtime_mode)
+            except Exception as e:
+                st.error(f"Failed to run recent-runs query: {e}")
+                return
+
+            if df_runs is None or df_runs.empty:
+                st.info("No recent runs found for that table.")
+                return
+
+            st.subheader("Recent runs")
+            st.dataframe(df_runs.fillna(""), hide_index=True)
+            return
+
+    if not generate_sql:
         return
 
     source_type_label = active_source_type
@@ -471,39 +625,103 @@ def _render_ingestion_builder(conn: Any, runtime_mode: str) -> None:
         st.warning("Adhoc metadata table is not deployed to PROD.")
 
     if schedule_enable:
-        statements.append(
-            (
-                f"Enable scheduled ingestion ({scheduled_proc_name})",
-                build_schedule_update_sql(
-                    environment,
-                    logical_name=logical_name,
-                    file_landing_schema=file_landing_schema,
-                    file_wildcard_pattern=file_wildcard_pattern,
-                    file_table_name=file_table_name,
-                    file_extension=file_extension,
-                    sheet_name=sheet_name,
-                    source_type_label=source_type_label,
-                    enabled_flag=enabled_flag,
-                    file_format=file_format,
-                    has_header=has_header,
-                    database_name=database_name,
-                    schema_name=schema_name,
-                    source_table_name=source_table_name,
-                    delta_column=delta_column,
-                    change_tracking_type=change_tracking_type,
-                    server_name=server_name,
-                    file_server_load_type=file_server_load_type,
-                    filestamp_format=filestamp_format,
-                    auto_ingest=auto_ingest,
-                    file_server_filepath=file_server_filepath,
-                    fixed_width_filetype=fixed_width_filetype,
-                    regex_pattern=regex_pattern,
-                    requested_by=_get_requester(),
-                    notes="",
-                    priority_flag=priority_flag,
-                ),
-            )
+        # Generate SET ... CALL statements for the scheduled ingestion procedure
+        # Build SET lines and CALL statement separately so the UI shows the SETs
+        # before the CALL (filled with literal values).
+        set_sql, call_sql = build_schedule_sets_and_call(
+            environment,
+            logical_name=logical_name,
+            file_landing_schema=file_landing_schema,
+            file_wildcard_pattern=file_wildcard_pattern,
+            file_table_name=file_table_name,
+            file_extension=file_extension,
+            sheet_name=sheet_name,
+            source_type_label=source_type_label,
+            enabled_flag=enabled_flag,
+            file_format=file_format,
+            has_header=has_header,
+            database_name=database_name,
+            schema_name=schema_name,
+            source_table_name=source_table_name,
+            delta_column=delta_column,
+            change_tracking_type=change_tracking_type,
+            server_name=server_name,
+            file_server_load_type=file_server_load_type,
+            filestamp_format=filestamp_format,
+            auto_ingest=auto_ingest,
+            file_server_filepath=file_server_filepath,
+            fixed_width_filetype=fixed_width_filetype,
+            regex_pattern=regex_pattern,
         )
+        # Build ordered entries: adhoc SET/CALL (if applicable) first,
+        # then scheduled SET/CALL, then the full scheduled metadata SQL.
+        new_entries: StatementList = []
+
+        # adhoc entries (for DEV/TEST/UAT)
+        if environment in ADHOC_ENVIRONMENTS:
+            adhoc_key = str(uuid.uuid4())
+            last_trigger = datetime.now()
+            load_start_literal = schedule_start_dt.isoformat() if schedule_start_dt else ""
+            load_end_literal = schedule_stop_dt.isoformat() if schedule_stop_dt else ""
+            adhoc_set = "\n".join([
+                f"SET METADATA_CONFIG_KEY       = '{adhoc_key}';",
+                f"SET LOAD_START_DATETIME       = '{load_start_literal}';",
+                f"SET LOAD_END_DATETIME         = '{load_end_literal}';",
+                f"SET LAST_TRIGGER_TIMESTAMP    = '{last_trigger.isoformat()}';",
+            ])
+            adhoc_proc_name = f"STAGE_{environment.upper()}.ELT.INSERT_METADATA_CONFIG_TABLE_ADHOC_{environment.upper()}"
+            adhoc_call = (
+                f"CALL {adhoc_proc_name}(\n"
+                "    $METADATA_CONFIG_KEY,\n"
+                "    $LOAD_START_DATETIME,\n"
+                "    $LOAD_END_DATETIME,\n"
+                "    $LAST_TRIGGER_TIMESTAMP\n"
+                ");"
+            )
+            new_entries.append((f"SET variables for {adhoc_proc_name}", adhoc_set))
+            new_entries.append((f"Call adhoc trigger ({adhoc_proc_name})", adhoc_call))
+
+        # scheduled SET/CALL
+        new_entries.append((f"SET variables for {scheduled_proc_name}", set_sql))
+        new_entries.append((f"Call scheduled procedure ({scheduled_proc_name})", call_sql))
+
+        # full metadata SQL for reference
+        full_sql = build_schedule_update_sql(
+            environment,
+            logical_name=logical_name,
+            file_landing_schema=file_landing_schema,
+            file_wildcard_pattern=file_wildcard_pattern,
+            file_table_name=file_table_name,
+            file_extension=file_extension,
+            sheet_name=sheet_name,
+            source_type_label=source_type_label,
+            enabled_flag=enabled_flag,
+            file_format=file_format,
+            has_header=has_header,
+            database_name=database_name,
+            schema_name=schema_name,
+            source_table_name=source_table_name,
+            delta_column=delta_column,
+            change_tracking_type=change_tracking_type,
+            server_name=server_name,
+            file_server_load_type=file_server_load_type,
+            filestamp_format=filestamp_format,
+            auto_ingest=auto_ingest,
+            file_server_filepath=file_server_filepath,
+            fixed_width_filetype=fixed_width_filetype,
+            regex_pattern=regex_pattern,
+            requested_by=_get_requester(),
+            notes=(
+                f"ScheduleStart={schedule_start_dt.isoformat()}|ScheduleStop={schedule_stop_dt.isoformat()}"
+                if schedule_start_dt and schedule_stop_dt
+                else ""
+            ),
+            priority_flag=priority_flag,
+        )
+        new_entries.append((f"Enable scheduled ingestion ({scheduled_proc_name})", full_sql))
+
+        # Prepend the new ordered entries so they display/run first
+        statements = new_entries + statements
 
     if not statements:
         st.info("No SQL generated. Enable at least one action above.")
@@ -514,11 +732,85 @@ def _render_ingestion_builder(conn: Any, runtime_mode: str) -> None:
         st.markdown(f"**{label}**")
         st.code(sql, language="sql")
 
-    if conn is None or runtime_mode not in {"snowflake_local", "snowflake_deployed"}:
-        st.info("Preview only. Connect to Snowflake to execute these statements directly.")
+    if conn is None:
+        st.info("Connect to Snowflake or DuckDB to execute this SQL.")
         return
 
-    if st.button("Execute SQL in Snowflake", type="primary"):
+    col_exec, col_view = st.columns(2)
+    with col_exec:
+        execute_now = st.button("Run SQL", type="primary", key="exec_copilot_sql")
+    with col_view:
+        show_adhoc = st.button("Show adhoc table", key="show_adhoc_table")
+
+    # Show adhoc table on demand
+    if show_adhoc:
+        env_upper = environment.upper()
+        if runtime_mode == "duckdb":
+            adhoc_table_ref = "METADATA_CONFIG_TABLE_ELT_ADHOC"
+        else:
+            adhoc_table_ref = f"STAGE_{env_upper}.ELT.METADATA_CONFIG_TABLE_ELT_ADHOC"
+        
+        query_adhoc = f"SELECT * FROM {adhoc_table_ref} ORDER BY LAST_TRIGGER_TIMESTAMP DESC LIMIT 50"
+        try:
+            df_adhoc = run_query(conn, query_adhoc, runtime_mode)
+            if df_adhoc is not None and not df_adhoc.empty:
+                st.subheader(f"Recent adhoc triggers ({len(df_adhoc)} rows)")
+                st.dataframe(df_adhoc, hide_index=True, width="stretch")
+            else:
+                st.info("No adhoc triggers found in this environment.")
+        except Exception as e:
+            st.warning(f"Could not fetch adhoc table: {e}")
+        return
+
+    if not execute_now:
+        return
+
+    with st.spinner("Executing SQL..."):
+        # If adhoc environment, try to locate the metadata_config_key and
+        # call the adhoc insert procedure first (inserts a trigger row).
+        if environment in ADHOC_ENVIRONMENTS:
+            env_upper = environment.upper()
+            metadata_table = f"STAGE_{env_upper}.ELT.METADATA_CONFIG_TABLE_ELT"
+            lookup_query = (
+                "SELECT METADATA_CONFIG_KEY FROM "
+                f"{metadata_table} "
+                "WHERE LOWER(TRIM(COALESCE(LOGICAL_NAME, ''))) = LOWER(TRIM('%(logical)s')) "
+                "AND LOWER(TRIM(COALESCE(DATABASE_NAME, ''))) = LOWER(TRIM('%(db)s')) "
+                "AND LOWER(TRIM(COALESCE(SCHEMA_NAME, ''))) = LOWER(TRIM('%(schema)s')) "
+                "AND LOWER(TRIM(COALESCE(SOURCE_TABLE_NAME, ''))) = LOWER(TRIM('%(table)s')) LIMIT 1"
+            )
+            try:
+                df = run_query(
+                    conn,
+                    lookup_query % {
+                        "logical": logical_name or "",
+                        "db": database_name or "",
+                        "schema": schema_name or "",
+                        "table": source_table_name or "",
+                    },
+                    runtime_mode,
+                )
+            except Exception as e:
+                st.warning(f"Metadata lookup failed: {e}")
+                df = None
+
+            if df is None or df.empty:
+                st.warning("Could not find a metadata_config_key for the provided inputs; adhoc trigger not inserted.")
+            else:
+                metadata_config_key = str(df.iloc[0]["METADATA_CONFIG_KEY"]).strip()
+                proc_name = f"STAGE_{env_upper}.ELT.INSERT_METADATA_CONFIG_TABLE_ADHOC_{env_upper}"
+                now_ts = datetime.now().isoformat()
+                start_ts = schedule_start_dt.isoformat() if schedule_start_dt else now_ts
+                end_ts = schedule_stop_dt.isoformat() if schedule_stop_dt else now_ts
+                call_sql = (
+                    f"CALL {proc_name}('{metadata_config_key}','{start_ts}','{end_ts}','{now_ts}');"
+                )
+                ok, msg = execute_ddl_dml(conn, runtime_mode, call_sql)
+                if ok:
+                    st.success(f"Adhoc trigger inserted via {proc_name}.")
+                else:
+                    st.error(f"Failed to insert adhoc trigger: {msg}")
+
         for label, sql in statements:
             ok, msg = execute_ddl_dml(conn, runtime_mode, sql)
             if ok:
@@ -526,6 +818,25 @@ def _render_ingestion_builder(conn: Any, runtime_mode: str) -> None:
             else:
                 st.error(f"{label} failed: {msg}")
                 break
+    
+    # Display adhoc table after execution
+    st.divider()
+    env_upper = environment.upper()
+    if runtime_mode == "duckdb":
+        adhoc_table_ref = "METADATA_CONFIG_TABLE_ELT_ADHOC"
+    else:
+        adhoc_table_ref = f"STAGE_{env_upper}.ELT.METADATA_CONFIG_TABLE_ELT_ADHOC"
+    
+    query_adhoc = f"SELECT * FROM {adhoc_table_ref} ORDER BY LAST_TRIGGER_TIMESTAMP DESC LIMIT 50"
+    try:
+        df_adhoc = run_query(conn, query_adhoc, runtime_mode)
+        if df_adhoc is not None and not df_adhoc.empty:
+            st.subheader(f"Recent adhoc triggers ({len(df_adhoc)} rows)")
+            st.dataframe(df_adhoc, hide_index=True, width="stretch")
+        else:
+            st.info("No adhoc triggers found in this environment.")
+    except Exception as e:
+        st.warning(f"Could not fetch adhoc table: {e}")
 
 
 def _render_table_lookup(conn: Any, runtime_mode: str) -> None:
@@ -592,6 +903,55 @@ def main() -> None:
     st.markdown("Guide developers through configuring new ingestion sources across file, SQL, Azure, and Excel patterns.")
 
     _render_ingestion_builder(conn, runtime_mode)
+    st.divider()
+    
+    # Show all scheduled runs from the adhoc view
+    st.subheader("📅 All Scheduled Runs")
+    st.caption("Recent adhoc triggers across all environments (from METADATA_CONFIG_TABLE_ELT_ADHOC_VW)")
+    
+    if conn is None:
+        st.info("Connect to Snowflake or DuckDB to view scheduled runs.")
+    else:
+        if runtime_mode == "duckdb":
+            view_ref = "METADATA_CONFIG_TABLE_ELT_ADHOC_VW"
+            # Check if view exists (will be created when test data is set up)
+            if not _table_exists(conn, view_ref, runtime_mode):
+                st.info("Adhoc view not yet created. Use 'Setup Test Data' button in sidebar to create views and tables.")
+            else:
+                query_all_runs = (
+                    f"SELECT METADATA_CONFIG_KEY, LOGICAL_NAME, DATABASE_NAME, SCHEMA_NAME, SOURCE_TABLE_NAME, "
+                    f"LOAD_START_DATETIME, LOAD_END_DATETIME, LAST_TRIGGER_TIMESTAMP, ERROR_STATUS, ENVIRONMENT "
+                    f"FROM {view_ref} "
+                    "ORDER BY LAST_TRIGGER_TIMESTAMP DESC LIMIT 100"
+                )
+                try:
+                    df_all_runs = run_query(conn, query_all_runs, runtime_mode)
+                    if df_all_runs is not None and not df_all_runs.empty:
+                        st.caption(f"Showing {len(df_all_runs)} most recent triggers")
+                        st.dataframe(df_all_runs, hide_index=True, width="stretch", height=400)
+                    else:
+                        st.info("No scheduled runs found. Use 'Run SQL' button to create adhoc triggers.")
+                except Exception as e:
+                    st.warning(f"Could not fetch scheduled runs: {e}")
+        else:
+            view_ref = "DATA_VAULT_TEMP.MIGRATION.METADATA_CONFIG_TABLE_ELT_ADHOC_VW"
+            query_all_runs = (
+                f"SELECT METADATA_CONFIG_KEY, LOGICAL_NAME, DATABASE_NAME, SCHEMA_NAME, SOURCE_TABLE_NAME, "
+                f"LOAD_START_DATETIME, LOAD_END_DATETIME, LAST_TRIGGER_TIMESTAMP, ERROR_STATUS, ENVIRONMENT "
+                f"FROM {view_ref} "
+                "ORDER BY LAST_TRIGGER_TIMESTAMP DESC LIMIT 100"
+            )
+            
+            try:
+                df_all_runs = run_query(conn, query_all_runs, runtime_mode)
+                if df_all_runs is not None and not df_all_runs.empty:
+                    st.caption(f"Showing {len(df_all_runs)} most recent triggers")
+                    st.dataframe(df_all_runs, hide_index=True, width="stretch", height=400)
+                else:
+                    st.info("No scheduled runs found. Create adhoc triggers using the builder above.")
+            except Exception as e:
+                st.warning(f"Could not fetch scheduled runs: {e}")
+    
     st.divider()
     _render_table_lookup(conn, runtime_mode)
 

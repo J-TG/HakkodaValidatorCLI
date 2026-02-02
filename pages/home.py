@@ -17,11 +17,13 @@ from common.db import (
     get_testtable_query,
     get_snowflake_table_prefix,
     setup_test_tables,
+    setup_mock_data_tables,
+    setup_metadata_tables,
     check_test_tables_exist,
     DEFAULT_SNOWFLAKE_DATABASE,
     DEFAULT_SNOWFLAKE_SCHEMA,
 )
-from common.test_data import TEST_TABLES
+from common.test_data import TEST_TABLES, MOCK_DATA_TABLES, METADATA_TABLES, get_all_setup_sql, get_mock_data_setup_sql, get_metadata_setup_sql
 
 
 def main():
@@ -125,10 +127,27 @@ def main():
     def _format_activity(activity):
         return activity or "—"
     
-    col_actions = st.columns([1, 1])
+    # SQL Preview Sections
+    st.markdown("**Preview SQL statements that will be executed:**")
+    
+    with st.expander("📋 View All Setup SQL", expanded=False):
+        all_sql = get_all_setup_sql(schema_prefix)
+        st.code(all_sql, language="sql")
+    
+    with st.expander("📊 View Mock Data SQL", expanded=False):
+        mock_sql = get_mock_data_setup_sql(schema_prefix)
+        st.code(mock_sql, language="sql")
+    
+    with st.expander("⚙️ View Metadata SQL", expanded=False):
+        metadata_sql = get_metadata_setup_sql(schema_prefix)
+        st.code(metadata_sql, language="sql")
+    
+    st.markdown("**Setup Options:**")
+    col_actions = st.columns([1, 1, 1])
+    
     with col_actions[0]:
-        if st.button("🚀 Setup Test Data", type="primary", width="stretch"):
-            with st.spinner("Creating and populating test tables..."):
+        if st.button("🚀 Setup All Data", type="primary", width="stretch"):
+            with st.spinner("Creating and populating all tables..."):
                 results = setup_test_tables(conn, runtime_mode, schema_prefix)
                 activity_map = st.session_state["test_table_activity"]
                 all_ok = True
@@ -147,14 +166,68 @@ def main():
                 
                 if all_ok:
                     st.balloons()
-                    st.toast("Test data setup complete!", icon="🎉")
+                    st.toast("All tables setup complete!", icon="🎉")
                 else:
                     st.toast("Some tables failed — see Last Action column for details.", icon="⚠️")
                 st.toast("Status cleared. Run Check Table Status to refresh.", icon="ℹ️")
-                # Clear query cache to show fresh data
                 run_query.clear()
+    
     with col_actions[1]:
-        if st.button("🔍 Check Table Status", width="stretch"):
+        if st.button("📊 Setup Mock Data", width="stretch"):
+            with st.spinner("Creating mock/test data tables..."):
+                results = setup_mock_data_tables(conn, runtime_mode, schema_prefix)
+                activity_map = st.session_state["test_table_activity"]
+                all_ok = True
+                for table_name, success, message in results:
+                    base_table = table_name.split(" ")[0]
+                    phase = "DDL" if "(DDL)" in table_name else "DML" if "(DML)" in table_name else "Setup"
+                    prefix = "✅" if success else "❌"
+                    detail = message or "OK"
+                    activity_map[base_table] = f"{prefix} {phase}: {detail}"
+                    if not success:
+                        all_ok = False
+                st.session_state["test_table_activity"] = activity_map
+                st.session_state["test_table_status"] = {}
+                st.session_state["test_table_last_checked"] = None
+                st.session_state["test_table_status_queries"] = []
+                
+                if all_ok:
+                    st.balloons()
+                    st.toast("Mock data setup complete!", icon="🎉")
+                else:
+                    st.toast("Some tables failed — see Last Action column for details.", icon="⚠️")
+                st.toast("Status cleared. Run Check Table Status to refresh.", icon="ℹ️")
+                run_query.clear()
+    
+    with col_actions[2]:
+        if st.button("⚙️ Setup Metadata", width="stretch"):
+            with st.spinner("Creating metadata/app storage tables..."):
+                results = setup_metadata_tables(conn, runtime_mode, schema_prefix)
+                activity_map = st.session_state["test_table_activity"]
+                all_ok = True
+                for table_name, success, message in results:
+                    base_table = table_name.split(" ")[0]
+                    phase = "DDL" if "(DDL)" in table_name else "DML" if "(DML)" in table_name else "Setup"
+                    prefix = "✅" if success else "❌"
+                    detail = message or "OK"
+                    activity_map[base_table] = f"{prefix} {phase}: {detail}"
+                    if not success:
+                        all_ok = False
+                st.session_state["test_table_activity"] = activity_map
+                st.session_state["test_table_status"] = {}
+                st.session_state["test_table_last_checked"] = None
+                st.session_state["test_table_status_queries"] = []
+                
+                if all_ok:
+                    st.balloons()
+                    st.toast("Metadata tables setup complete!", icon="🎉")
+                else:
+                    st.toast("Some tables failed — see Last Action column for details.", icon="⚠️")
+                st.toast("Status cleared. Run Check Table Status to refresh.", icon="ℹ️")
+                run_query.clear()
+    
+    # Check status button
+    if st.button("🔍 Check Table Status", width="stretch"):
             with st.spinner("Checking tables..."):
                 query_log = []
                 status = check_test_tables_exist(
@@ -187,6 +260,11 @@ def main():
     table_catalog = pd.DataFrame(
         [
             {
+                "Category": (
+                    "📊 Mock Data" if table_def["name"].upper() in MOCK_DATA_TABLES
+                    else "⚙️ Metadata" if table_def["name"].upper() in METADATA_TABLES
+                    else "📋 Other"
+                ),
                 "Table": table_def["name"],
                 "Fully Qualified": f"{schema_prefix}.{table_def['name']}" if schema_prefix else table_def["name"],
                 "Description": table_def["description"],
@@ -205,6 +283,7 @@ def main():
         width="stretch",
         hide_index=True,
         column_config={
+            "Category": st.column_config.TextColumn(width="small"),
             "Table": st.column_config.TextColumn(width="small"),
             "Description": st.column_config.TextColumn(width="medium"),
             "Date Column": st.column_config.TextColumn(width="small"),

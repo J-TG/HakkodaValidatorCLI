@@ -70,6 +70,11 @@ def get_pages() -> Dict[str, List[st.Page]]:
                 icon="🧩",
             ),
             st.Page(
+                "pages/mapping.py",
+                title="Source-to-Target Mapping",
+                icon="🗺️",
+            ),
+            st.Page(
                 "pages/reporting_views.py",
                 title="Reporting View Creation",
                 icon="🧾",

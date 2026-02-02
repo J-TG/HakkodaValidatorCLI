@@ -37,8 +37,8 @@ import pandas as pd
 # The get_duckdb_connection() function contains a guarded import.
 
 # Default table prefix for Snowflake queries (configurable via UI)
-DEFAULT_SNOWFLAKE_DATABASE = "DATA_VAULT_DEV"
-DEFAULT_SNOWFLAKE_SCHEMA = "INFO_MART"
+DEFAULT_SNOWFLAKE_DATABASE = "DATA_VAULT_TEMP"
+DEFAULT_SNOWFLAKE_SCHEMA = "MIGRATION"
 
 METADATA_CONFIG_TABLE_NAME = "METADATA_CONFIG_TABLE_ELT"
 DEFAULT_INGESTION_METADATA_CONFIG: Dict[str, Dict[str, str]] = {
@@ -354,7 +354,7 @@ def setup_test_tables(
     schema_prefix: str = "",
 ) -> List[Tuple[str, bool, str]]:
     """
-    Create and populate all test tables.
+    Create and populate all test tables (both mock data and metadata).
     
     Args:
         conn: Database connection
@@ -399,14 +399,108 @@ def setup_test_tables(
             results.append((f"{table_name} (DDL)", False, ddl_msg))
             continue
         
-        # Execute DML
+        # Execute DML only if it exists (skip for views with empty DML)
         dml = format_dml(table_name, effective_prefix)
-        dml_ok, dml_msg = execute_ddl_dml(conn, mode, dml)
-        
-        if dml_ok:
-            results.append((table_name, True, "Created and populated"))
+        if dml and dml.strip():
+            dml_ok, dml_msg = execute_ddl_dml(conn, mode, dml)
+            if dml_ok:
+                results.append((table_name, True, "Created and populated"))
+            else:
+                results.append((f"{table_name} (DML)", False, dml_msg))
         else:
-            results.append((f"{table_name} (DML)", False, dml_msg))
+            # No DML (e.g., for views), just mark as created
+            results.append((table_name, True, "Created"))
+    
+    return results
+
+
+def _setup_tables_by_category(
+    conn: Any,
+    mode: RuntimeMode,
+    schema_prefix: str,
+    table_list: List[Dict[str, Any]],
+) -> List[Tuple[str, bool, str]]:
+    """
+    Internal helper to set up a specific list of tables.
+    
+    Args:
+        conn: Database connection
+        mode: Runtime mode
+        schema_prefix: Schema prefix for Snowflake
+        table_list: List of table definitions to create
+    
+    Returns:
+        List of (table_name, success, message) tuples
+    """
+    from common.test_data import format_ddl, format_dml, LOCAL_ONLY_TABLES
+    
+    results = []
+    
+    # For Snowflake modes, set database/schema context first
+    if mode in ("snowflake_local", "snowflake_deployed") and schema_prefix:
+        parts = schema_prefix.split(".")
+        if len(parts) >= 2:
+            db_name, schema_name = parts[0], parts[1]
+            # Set context to avoid fully-qualified name issues
+            execute_ddl_dml(conn, mode, f'USE DATABASE "{db_name}"')
+            execute_ddl_dml(conn, mode, f'USE SCHEMA "{schema_name}"')
+    
+    for table_def in table_list:
+        table_name = table_def["name"]
+        # Skip creating local-only mapping tables unless running in DuckDB
+        if table_name.upper() in LOCAL_ONLY_TABLES and mode != "duckdb":
+            results.append((table_name, True, "Skipped (local-only mapping table)"))
+            continue
+        
+        # For Snowflake with context set, use just the table name
+        if mode in ("snowflake_local", "snowflake_deployed") and schema_prefix:
+            effective_prefix = ""  # Context already set via USE statements
+        else:
+            effective_prefix = schema_prefix
+        
+        # Execute DDL
+        ddl = format_ddl(table_name, effective_prefix)
+        ddl_ok, ddl_msg = execute_ddl_dml(conn, mode, ddl)
+        
+        if not ddl_ok:
+            results.append((f"{table_name} (DDL)", False, ddl_msg))
+            continue
+        
+        # Execute DML only if it exists (skip for views with empty DML)
+        dml = format_dml(table_name, effective_prefix)
+        if dml and dml.strip():
+            dml_ok, dml_msg = execute_ddl_dml(conn, mode, dml)
+            if dml_ok:
+                results.append((table_name, True, "Created and populated"))
+            else:
+                results.append((f"{table_name} (DML)", False, dml_msg))
+        else:
+            # No DML (e.g., for views), just mark as created
+            results.append((table_name, True, "Created"))
+    
+    return results
+
+
+def setup_mock_data_tables(
+    conn: Any,
+    mode: RuntimeMode,
+    schema_prefix: str = "",
+) -> List[Tuple[str, bool, str]]:
+    """Create and populate mock/test data tables only."""
+    from common.test_data import get_mock_data_tables
+    
+    return _setup_tables_by_category(conn, mode, schema_prefix, get_mock_data_tables())
+
+
+def setup_metadata_tables(
+    conn: Any,
+    mode: RuntimeMode,
+    schema_prefix: str = "",
+) -> List[Tuple[str, bool, str]]:
+    """Create and populate metadata/app storage tables only."""
+    from common.test_data import get_metadata_tables
+    
+    return _setup_tables_by_category(conn, mode, schema_prefix, get_metadata_tables())
     
     return results
 

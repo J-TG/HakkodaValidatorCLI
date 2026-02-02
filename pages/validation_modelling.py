@@ -508,6 +508,14 @@ def main() -> None:
         results: List[Dict[str, Any]] = []
         run_status = "success"
 
+        # Show complete script before execution
+        with st.expander("📜 Complete Validation Script", expanded=False):
+            complete_script = "\n\n-- Step separator\n\n".join(
+                [f"-- Step {i}: {step.title}\n{step.sql_template.format(**query_context)}"
+                 for i, step in enumerate(steps, start=1)]
+            )
+            st.code(complete_script, language="sql")
+
         st.markdown("### Run Status")
         for index, step in enumerate(steps, start=1):
             with st.expander(f"Step {index}: {step.title}", expanded=True):
