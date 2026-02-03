@@ -170,12 +170,15 @@ function Invoke-DeploySnowflake {
     Import-EnvFile ".env.snowflake-dev"
     Import-EnvFile ".env.deploy-dev"
 
-    snow sql -q "USE DATABASE `"$env:SF_DEPLOY_DATABASE`"; USE SCHEMA `"$env:SF_DEPLOY_SCHEMA`";"
+    $deployRole = if ($env:SF_DEPLOY_ROLE) { $env:SF_DEPLOY_ROLE } else { "SYSADMIN" }
+
+    snow sql -q "USE ROLE `"$deployRole`"; USE DATABASE `"$env:SF_DEPLOY_DATABASE`"; USE SCHEMA `"$env:SF_DEPLOY_SCHEMA`";"
     
     snow streamlit deploy `
         --database $env:SF_DEPLOY_DATABASE `
         --schema $env:SF_DEPLOY_SCHEMA `
         --warehouse $env:SF_DEPLOY_WAREHOUSE `
+        --role $deployRole `
         $env:SF_DEPLOY_APP `
         --replace
 

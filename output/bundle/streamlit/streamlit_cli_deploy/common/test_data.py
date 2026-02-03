@@ -235,6 +235,18 @@ INSERT INTO {table_ref} (
 """,
     },
     {
+        "name": "VW_METADATA_CONFIG_TABLE_ELT_MASTER",
+        "description": "Master view over metadata config table for ingestion copilot picklists",
+        "ddl": """
+CREATE OR REPLACE VIEW {table_ref} AS
+SELECT
+    'DEV' AS ENVIRONMENT,
+    t.*
+FROM {schema_prefix}METADATA_CONFIG_TABLE_ELT AS t;
+""",
+        "dml": "",
+    },
+    {
         "name": "METADATA_SQL_SERVER_LOOKUP",
         "description": "Mock SQL Server metadata rows for table lookup filters",
         "ddl": """

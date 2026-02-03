@@ -3,7 +3,7 @@ entities:
   streamlit_cli_deploy:
     type: streamlit
     identifier:
-      name: streamlit_cli_deploy
+      name: MIGRATION_COPILOT
     main_file: streamlit_app.py
     pages_dir: pages
     query_warehouse: COMPUTE_WH

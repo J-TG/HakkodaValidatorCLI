@@ -20,6 +20,7 @@ https://docs.streamlit.io/develop/concepts/multipage-apps/overview
 """
 
 import streamlit as st
+import traceback
 
 # =============================================================================
 # Page configuration (MUST be first Streamlit command)
@@ -48,7 +49,12 @@ init_session_state()
 # =============================================================================
 # st.navigation returns the selected page
 # The dict structure creates grouped navigation in the sidebar
-page = setup_navigation()
-
-# Run the selected page
-page.run()
+try:
+    page = setup_navigation()
+    # Run the selected page
+    page.run()
+except Exception as exc:
+    # Surface unexpected errors so the browser doesn't just disconnect
+    traceback.print_exc()
+    st.exception(exc)
+    st.stop()

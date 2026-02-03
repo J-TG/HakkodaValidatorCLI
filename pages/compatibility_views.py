@@ -450,7 +450,6 @@ def main() -> None:
         st.warning("No source-to-target mappings found.")
         return
 
-    domain_options = sorted(mapping_df["DOMAIN"].dropna().unique().tolist())
     database_options = sorted(mapping_df["SOURCE_DATABASE"].dropna().unique().tolist())
     schema_options = sorted(mapping_df["SOURCE_SCHEMA_NAME"].dropna().unique().tolist())
     source_table_options = sorted(mapping_df["SOURCE_TABLE_NAME"].dropna().unique().tolist())
@@ -462,13 +461,6 @@ def main() -> None:
     # Filters for Create View section
     col1, col2 = st.columns(2)
     with col1:
-        selected_domains = st.multiselect(
-            "Filter by Domain",
-            options=domain_options,
-            default=domain_options,
-            key="create_view_domain_filter",
-        )
-    with col2:
         selected_databases = st.multiselect(
             "Filter by Source Database",
             options=database_options,
@@ -489,8 +481,7 @@ def main() -> None:
     
     # Apply filters to mapping data
     filtered_for_create = mapping_df[
-        mapping_df["DOMAIN"].isin(selected_domains)
-        & mapping_df["SOURCE_DATABASE"].isin(selected_databases)
+        mapping_df["SOURCE_DATABASE"].isin(selected_databases)
         & mapping_df["SOURCE_SCHEMA_NAME"].isin(selected_schemas)
     ]
     
@@ -602,8 +593,7 @@ def main() -> None:
 
     # Display filtered mapping using the same filters from Create View section
     filtered = mapping_df[
-        mapping_df["DOMAIN"].isin(selected_domains)
-        & mapping_df["SOURCE_SCHEMA_NAME"].isin(selected_schemas)
+        mapping_df["SOURCE_SCHEMA_NAME"].isin(selected_schemas)
     ]
     
     # Further filter by selected table if one was chosen

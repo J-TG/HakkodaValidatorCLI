@@ -526,76 +526,75 @@ def main() -> None:
             ]
 
             table_keys = table_display["SOURCE_TABLE"].fillna("").tolist()
+            table_options = ["(All Tables)"] + table_keys
             selected_table = st.selectbox(
                 "Select Source Table",
-                options=table_keys,
-                index=-1 if not table_keys else 0,
-                help="Pick a legacy source table to view its mappings.",
+                options=table_options,
+                index=0,
+                help="Pick a legacy source table for actions (table view always shows all rows).",
                 key="table_level_table",
             )
 
-            # Display filtered table data
-            if selected_table:
-                filtered_display = table_display[table_display["SOURCE_TABLE"] == selected_table]
-                st.dataframe(filtered_display, width="stretch", hide_index=True, height=600)
-                
-                # Add Needs Review checkbox
-                needs_review = st.checkbox(
-                    "Mark this table for review",
-                    value=False,
-                    key=f"needs_review_table_{selected_table}",
-                    help="Check to add this table to the Needs Review section"
-                )
-                
-                if needs_review:
-                    if st.button("Add to Needs Review", type="secondary", key=f"add_review_btn_{selected_table}"):
-                        # Get the mapping rows for this table
-                        table_rows = filtered[filtered["SOURCE_TABLE_NAME"] == selected_table]
-                        if not table_rows.empty:
-                            for _, row in table_rows.iterrows():
-                                correction_record = {
-                                    "MAPPING_ID": str(__import__("uuid").uuid4()),
-                                    "OBJECT_TYPE": "TABLE",
-                                    "SOURCE_TABLE_NAME": row.get("SOURCE_TABLE_NAME", ""),
-                                    "SOURCE_COLUMN_NAME": row.get("SOURCE_COLUMN_NAME", ""),
-                                    "ORIGINAL_TARGET_NAME": row.get("TARGET_TABLE_NAME", ""),
-                                    "SUGGESTED_TARGET_NAME": row.get("TARGET_TABLE_NAME", ""),
-                                    "UPDATED_TARGET_NAME": "",
-                                    "NEEDS_REVIEW": True,
-                                    "CREATED_AT": __import__("datetime").datetime.now().isoformat(),
-                                    "CREATED_BY": "user",
-                                    "STATUS": "PENDING",
-                                    "TEAM": "",
-                                    "NOTES": ""
-                                }
-                                # Save to database
-                                merge_sql = f"""
-                                MERGE INTO {quote_ident(view_cfg.database)}.{quote_ident(view_cfg.schema)}.MAPPING_REVIEW_CORRECTIONS AS t
-                                USING (SELECT '{correction_record["MAPPING_ID"]}' AS MAPPING_ID) AS s
-                                ON t.MAPPING_ID = s.MAPPING_ID
-                                WHEN NOT MATCHED THEN INSERT (
-                                    MAPPING_ID, OBJECT_TYPE, SOURCE_TABLE_NAME, SOURCE_COLUMN_NAME,
-                                    ORIGINAL_TARGET_NAME, SUGGESTED_TARGET_NAME, UPDATED_TARGET_NAME,
-                                    NEEDS_REVIEW, CREATED_AT, CREATED_BY, STATUS, TEAM, NOTES
-                                ) VALUES (
-                                    '{correction_record["MAPPING_ID"]}', '{correction_record["OBJECT_TYPE"]}',
-                                    '{correction_record["SOURCE_TABLE_NAME"]}', '{correction_record["SOURCE_COLUMN_NAME"]}',
-                                    '{correction_record["ORIGINAL_TARGET_NAME"]}', '{correction_record["SUGGESTED_TARGET_NAME"]}',
-                                    '', TRUE, CURRENT_TIMESTAMP, 'user', 'PENDING', '', ''
-                                );
-                                """
-                                try:
-                                    execute_ddl_dml(conn, mode, merge_sql)
-                                except Exception as e:
-                                    st.warning(f"Could not save to review table (may not exist): {e}")
-                            st.success(f"Added {selected_table} to Needs Review!")
-                            st.rerun()
-            else:
-                st.dataframe(table_display, width="stretch", hide_index=True, height=600)
+            # Always display full table data (no filtering in table-level view)
+            st.dataframe(table_display, width="stretch", hide_index=True, height=600)
 
-            create_disabled = not selected_table or not snowflake_enabled
+            can_review = selected_table and selected_table != "(All Tables)"
+            # Add Needs Review checkbox
+            needs_review = st.checkbox(
+                "Mark this table for review",
+                value=False,
+                key=f"needs_review_table_{selected_table}",
+                help="Check to add this table to the Needs Review section",
+                disabled=not can_review,
+            )
+
+            if needs_review and can_review:
+                if st.button("Add to Needs Review", type="secondary", key=f"add_review_btn_{selected_table}"):
+                    # Get the mapping rows for this table
+                    table_rows = filtered[filtered["SOURCE_TABLE_NAME"] == selected_table]
+                    if not table_rows.empty:
+                        for _, row in table_rows.iterrows():
+                            correction_record = {
+                                "MAPPING_ID": str(__import__("uuid").uuid4()),
+                                "OBJECT_TYPE": "TABLE",
+                                "SOURCE_TABLE_NAME": row.get("SOURCE_TABLE_NAME", ""),
+                                "SOURCE_COLUMN_NAME": row.get("SOURCE_COLUMN_NAME", ""),
+                                "ORIGINAL_TARGET_NAME": row.get("TARGET_TABLE_NAME", ""),
+                                "SUGGESTED_TARGET_NAME": row.get("TARGET_TABLE_NAME", ""),
+                                "UPDATED_TARGET_NAME": "",
+                                "NEEDS_REVIEW": True,
+                                "CREATED_AT": __import__("datetime").datetime.now().isoformat(),
+                                "CREATED_BY": "user",
+                                "STATUS": "PENDING",
+                                "TEAM": "",
+                                "NOTES": ""
+                            }
+                            # Save to database
+                            merge_sql = f"""
+                            MERGE INTO {quote_ident(view_cfg.database)}.{quote_ident(view_cfg.schema)}.MAPPING_REVIEW_CORRECTIONS AS t
+                            USING (SELECT '{correction_record["MAPPING_ID"]}' AS MAPPING_ID) AS s
+                            ON t.MAPPING_ID = s.MAPPING_ID
+                            WHEN NOT MATCHED THEN INSERT (
+                                MAPPING_ID, OBJECT_TYPE, SOURCE_TABLE_NAME, SOURCE_COLUMN_NAME,
+                                ORIGINAL_TARGET_NAME, SUGGESTED_TARGET_NAME, UPDATED_TARGET_NAME,
+                                NEEDS_REVIEW, CREATED_AT, CREATED_BY, STATUS, TEAM, NOTES
+                            ) VALUES (
+                                '{correction_record["MAPPING_ID"]}', '{correction_record["OBJECT_TYPE"]}',
+                                '{correction_record["SOURCE_TABLE_NAME"]}', '{correction_record["SOURCE_COLUMN_NAME"]}',
+                                '{correction_record["ORIGINAL_TARGET_NAME"]}', '{correction_record["SUGGESTED_TARGET_NAME"]}',
+                                '', TRUE, CURRENT_TIMESTAMP, 'user', 'PENDING', '', ''
+                            );
+                            """
+                            try:
+                                execute_ddl_dml(conn, mode, merge_sql)
+                            except Exception as e:
+                                st.warning(f"Could not save to review table (may not exist): {e}")
+                        st.success(f"Added {selected_table} to Needs Review!")
+                        st.rerun()
+
+            create_disabled = not can_review or not snowflake_enabled
             if st.button("Create Views From Selected Table", type="primary", disabled=create_disabled, key="create_table_views"):
-                if selected_table:
+                if can_review:
                     results = perform_view_action("create", [selected_table], filtered, conn, mode, view_cfg)
                     for table, ok, message in results:
                         (st.success if ok else st.error)(f"{table}: {message}")

@@ -9,7 +9,7 @@ import uuid
 import streamlit as st
 
 from common.layout import init_page, get_runtime_mode
-from common.db import execute_ddl_dml, get_snowflake_table_prefix, run_query
+from common.db import execute_ddl_dml, get_snowflake_table_prefix, run_query, get_ingestion_metadata_table
 from common.ingestion_templates import (
     ADHOC_ENVIRONMENTS,
     ADF_POLL_SCHEDULE,
@@ -143,11 +143,15 @@ def _load_sql_source_options(conn: Any, runtime_mode: str) -> List[Dict[str, Any
     if conn is None:
         return []
 
-    view_name = "METADATA_SQL_SOURCES_PICKLIST_VW"
+    view_name = "VW_METADATA_CONFIG_TABLE_ELT_MASTER"
     prefix = "" if runtime_mode == "duckdb" else get_snowflake_table_prefix()
     table_ref = f"{prefix}.{view_name}" if prefix else view_name
     query = (
-        "SELECT LOGICAL_NAME, DATABASE_NAME, SCHEMA_NAME, SERVER_NAME, SOURCE_LABEL "
+        "SELECT DISTINCT "
+        "LOGICAL_NAME, DATABASE_NAME, SCHEMA_NAME, SERVER_NAME, "
+        "COALESCE(ENVIRONMENT, '') || ' | ' || COALESCE(LOGICAL_NAME, '') || ' | ' || "
+        "COALESCE(DATABASE_NAME, '') || '.' || COALESCE(SCHEMA_NAME, '') || ' | ' || "
+        "COALESCE(SERVER_NAME, '') AS SOURCE_LABEL "
         f"FROM {table_ref} ORDER BY SOURCE_LABEL"
     )
 
@@ -169,35 +173,28 @@ def _load_delta_columns(
     database_name: str,
     schema_name: str,
     server_name: str,
+    source_table_name: str = "",
 ) -> List[str]:
     if conn is None:
         return []
 
-    view_name = "METADATA_SQL_DELTA_COLUMNS_VW"
+    view_name = "VW_METADATA_CONFIG_TABLE_ELT_MASTER"
     prefix = "" if runtime_mode == "duckdb" else get_snowflake_table_prefix()
     table_ref = f"{prefix}.{view_name}" if prefix else view_name
-
     query = (
-        "SELECT DISTINCT DELTA_COLUMN FROM "
-        f"{table_ref} "
-        "WHERE LOGICAL_NAME = %(logical)s "
-        "AND DATABASE_NAME = %(db)s "
-        "AND SCHEMA_NAME = %(schema)s "
-        "AND COALESCE(SERVER_NAME, '') = COALESCE(%(server)s, '') "
-        "ORDER BY DELTA_COLUMN"
+        "SELECT DISTINCT DELTA_COLUMN "
+        f"FROM {table_ref} "
+        f"WHERE LOGICAL_NAME = '{_sql_literal(logical_name)}' "
+        f"AND DATABASE_NAME = '{_sql_literal(database_name)}' "
+        f"AND SCHEMA_NAME = '{_sql_literal(schema_name)}' "
+        f"AND COALESCE(SERVER_NAME, '') = COALESCE('{_sql_literal(server_name)}', '') "
+        + (f"AND SOURCE_TABLE_NAME = '{_sql_literal(source_table_name)}' " if source_table_name else "")
+        + "AND DELTA_COLUMN IS NOT NULL "
+        + "ORDER BY DELTA_COLUMN"
     )
 
     try:
-        df = run_query(
-            conn,
-            query % {
-                "logical": logical_name,
-                "db": database_name,
-                "schema": schema_name,
-                "server": server_name,
-            },
-            runtime_mode,
-        )
+        df = run_query(conn, query, runtime_mode)
     except Exception:
         return []
 
@@ -213,41 +210,74 @@ def _load_change_tracking(
     database_name: str,
     schema_name: str,
     server_name: str,
+    source_table_name: str = "",
 ) -> List[str]:
     if conn is None:
         return []
 
-    view_name = "METADATA_SQL_CHANGE_TRACKING_VW"
+    view_name = "VW_METADATA_CONFIG_TABLE_ELT_MASTER"
     prefix = "" if runtime_mode == "duckdb" else get_snowflake_table_prefix()
     table_ref = f"{prefix}.{view_name}" if prefix else view_name
-
     query = (
-        "SELECT DISTINCT CHANGE_TRACKING_TYPE FROM "
-        f"{table_ref} "
-        "WHERE LOGICAL_NAME = %(logical)s "
-        "AND DATABASE_NAME = %(db)s "
-        "AND SCHEMA_NAME = %(schema)s "
-        "AND COALESCE(SERVER_NAME, '') = COALESCE(%(server)s, '') "
-        "ORDER BY CHANGE_TRACKING_TYPE"
+        "SELECT DISTINCT CHANGE_TRACKING_TYPE "
+        f"FROM {table_ref} "
+        f"WHERE LOGICAL_NAME = '{_sql_literal(logical_name)}' "
+        f"AND DATABASE_NAME = '{_sql_literal(database_name)}' "
+        f"AND SCHEMA_NAME = '{_sql_literal(schema_name)}' "
+        f"AND COALESCE(SERVER_NAME, '') = COALESCE('{_sql_literal(server_name)}', '') "
+        + (f"AND SOURCE_TABLE_NAME = '{_sql_literal(source_table_name)}' " if source_table_name else "")
+        + "AND CHANGE_TRACKING_TYPE IS NOT NULL "
+        + "ORDER BY CHANGE_TRACKING_TYPE"
     )
 
     try:
-        df = run_query(
-            conn,
-            query % {
-                "logical": logical_name,
-                "db": database_name,
-                "schema": schema_name,
-                "server": server_name,
-            },
-            runtime_mode,
-        )
+        df = run_query(conn, query, runtime_mode)
     except Exception:
         return []
 
     if df is None or df.empty:
         return []
     return sorted({str(v) for v in df["CHANGE_TRACKING_TYPE"].dropna().tolist()})
+
+
+def _sql_literal(value: str) -> str:
+    return (value or "").replace("'", "''")
+
+
+def _load_source_tables(
+    conn: Any,
+    runtime_mode: str,
+    logical_name: str,
+    database_name: str,
+    schema_name: str,
+    server_name: str,
+) -> List[str]:
+    if conn is None:
+        return []
+    if not schema_name:
+        return []
+
+    view_name = "VW_METADATA_CONFIG_TABLE_ELT_MASTER"
+    prefix = "" if runtime_mode == "duckdb" else get_snowflake_table_prefix()
+    table_ref = f"{prefix}.{view_name}" if prefix else view_name
+    query = (
+        "SELECT DISTINCT SOURCE_TABLE_NAME "
+        f"FROM {table_ref} "
+        f"WHERE LOGICAL_NAME ILIKE '%{_sql_literal(logical_name)}%' "
+        f"AND DATABASE_NAME ILIKE '%{_sql_literal(database_name)}%' "
+        f"AND SCHEMA_NAME ILIKE '%{_sql_literal(schema_name)}%' "
+        f"AND COALESCE(SERVER_NAME, '') ILIKE '%{_sql_literal(server_name)}%' "
+        "ORDER BY SOURCE_TABLE_NAME"
+    )
+
+    try:
+        df = run_query(conn, query, runtime_mode)
+    except Exception:
+        return []
+
+    if df is None or df.empty:
+        return []
+    return sorted({str(v) for v in df["SOURCE_TABLE_NAME"].dropna().tolist()})
 
 
 def _render_ingestion_builder(conn: Any, runtime_mode: str) -> None:
@@ -282,12 +312,7 @@ def _render_ingestion_builder(conn: Any, runtime_mode: str) -> None:
             default_start_date = today
             default_stop_date = today + timedelta(days=3)
             start_date = col_start.date_input("Schedule Start Date", value=default_start_date)
-            start_time = col_start.time_input("Start Time", value=time(hour=0, minute=0))
             stop_date = col_stop.date_input("Schedule Stop Date", value=default_stop_date)
-            stop_time = col_stop.time_input("Stop Time", value=time(hour=0, minute=0))
-            # combine into datetimes for later use
-            schedule_start_dt = datetime.combine(start_date, start_time)
-            schedule_stop_dt = datetime.combine(stop_date, stop_time)
         sql_defaults = SQL_SERVER_DEFAULTS
         picklist_options = [manual_picklist_label] + [opt["SOURCE_LABEL"] for opt in sql_source_options]
         selected_label = st.selectbox(
@@ -302,31 +327,59 @@ def _render_ingestion_builder(conn: Any, runtime_mode: str) -> None:
             else None
         )
 
-        source_table_name = st.text_input(
-            "Source Table",
-            value=sql_defaults["source_table_name"],
-            help="Reference the upstream SQL Server table or view.",
+        debug_view_name = "VW_METADATA_CONFIG_TABLE_ELT_MASTER"
+        debug_prefix = "" if runtime_mode == "duckdb" else get_snowflake_table_prefix()
+        debug_table_ref = f"{debug_prefix}.{debug_view_name}" if debug_prefix else debug_view_name
+        debug_sql_metadata = (
+            "SELECT DISTINCT "
+            "LOGICAL_NAME, DATABASE_NAME, SCHEMA_NAME, SERVER_NAME, "
+            "COALESCE(ENVIRONMENT, '') || ' | ' || COALESCE(LOGICAL_NAME, '') || ' | ' || "
+            "COALESCE(DATABASE_NAME, '') || '.' || COALESCE(SCHEMA_NAME, '') || ' | ' || "
+            "COALESCE(SERVER_NAME, '') AS SOURCE_LABEL "
+            f"FROM {debug_table_ref} ORDER BY SOURCE_LABEL"
         )
 
+        source_table_name = st.session_state.get(
+            "source_table_name_select",
+            sql_defaults["source_table_name"],
+        )
+
+        if selected_source:
+            logical_name_filter = selected_source.get("LOGICAL_NAME") or ""
+            database_name_filter = selected_source.get("DATABASE_NAME") or ""
+            schema_name_filter = selected_source.get("SCHEMA_NAME") or ""
+            server_name_filter = selected_source.get("SERVER_NAME") or ""
+        else:
+            logical_name_filter = sql_defaults["logical_name"]
+            database_name_filter = sql_defaults["database_name"]
+            schema_name_filter = sql_defaults["schema_name"]
+            server_name_filter = sql_defaults["server_name"]
+
         with st.expander("Advanced options", expanded=False):
+            if schedule_mode == "Scheduled":
+                col_start_time, col_stop_time = st.columns(2)
+                start_time = col_start_time.time_input("Start Time", value=time(hour=0, minute=0))
+                stop_time = col_stop_time.time_input("Stop Time", value=time(hour=23, minute=59))
+                schedule_start_dt = datetime.combine(start_date, start_time)
+                schedule_stop_dt = datetime.combine(stop_date, stop_time)
             logical_name = st.text_input(
                 "Logical Name",
-                value=(selected_source.get("LOGICAL_NAME") or sql_defaults["logical_name"]) if selected_source else sql_defaults["logical_name"],
+                value=logical_name_filter,
             )
             col_db, col_schema = st.columns(2)
             database_name = col_db.text_input(
                 "Source Database",
-                value=(selected_source.get("DATABASE_NAME") or sql_defaults["database_name"]) if selected_source else sql_defaults["database_name"],
+                value=database_name_filter,
                 help=f"Observed in metadata: {', '.join(SQL_SERVER_DATABASE_EXAMPLES)}",
             )
             schema_name = col_schema.text_input(
                 "Source Schema",
-                value=(selected_source.get("SCHEMA_NAME") or sql_defaults["schema_name"]) if selected_source else sql_defaults["schema_name"],
+                value=schema_name_filter,
                 help="Choose A3_CURR for AgentCubed, dbo for Genesys/Mindful workloads.",
             )
             server_name = st.text_input(
                 "SQL Server Name",
-                value=(selected_source.get("SERVER_NAME") or sql_defaults["server_name"]) if selected_source else sql_defaults["server_name"],
+                value=server_name_filter,
                 help=f"Other observed servers: {', '.join(SQL_SERVER_SERVER_EXAMPLES[1:])}.",
             )
             priority_flag = st.checkbox(
@@ -334,6 +387,92 @@ def _render_ingestion_builder(conn: Any, runtime_mode: str) -> None:
                 value=sql_defaults["priority_flag"],
                 help="Bumps the request to the top of the queue when checked.",
             )
+
+            delta_options = _load_delta_columns(
+                conn,
+                runtime_mode,
+                logical_name=logical_name,
+                database_name=database_name,
+                schema_name=schema_name,
+                server_name=server_name,
+                source_table_name=source_table_name,
+            )
+            base_delta_options = delta_options or SQL_SERVER_DELTA_COLUMNS
+            default_delta = base_delta_options[0] if base_delta_options else sql_defaults["delta_column"]
+            change_tracking_options = _load_change_tracking(
+                conn,
+                runtime_mode,
+                logical_name=logical_name,
+                database_name=database_name,
+                schema_name=schema_name,
+                server_name=server_name,
+                source_table_name=source_table_name,
+            )
+            base_change_tracking = change_tracking_options or SQL_SERVER_CHANGE_TRACKING
+            col_delta, col_ct = st.columns(2)
+            try:
+                delta_default_index = base_delta_options.index(default_delta)
+            except ValueError:
+                delta_default_index = 0
+            delta_column_choice = col_delta.selectbox(
+                "Delta Column",
+                base_delta_options,
+                index=delta_default_index,
+            )
+            default_change_tracking = base_change_tracking[0] if base_change_tracking else sql_defaults["change_tracking_type"]
+            try:
+                ct_default_index = base_change_tracking.index(default_change_tracking)
+            except ValueError:
+                ct_default_index = 0
+            change_tracking_type = col_ct.selectbox(
+                "Change Tracking Type",
+                base_change_tracking,
+                index=ct_default_index,
+            )
+            delta_column = delta_column_choice
+
+        table_options = _load_source_tables(
+            conn,
+            runtime_mode,
+            logical_name_filter,
+            database_name_filter,
+            schema_name_filter,
+            server_name_filter,
+        )
+        if selected_source and not table_options:
+            st.warning("No tables found for the selected SQL metadata.")
+            table_options = ["(No tables found)"]
+            default_index = 0
+
+        debug_sql_source_tables = (
+            "SELECT DISTINCT SOURCE_TABLE_NAME "
+            f"FROM {debug_table_ref} "
+            f"WHERE LOGICAL_NAME ILIKE '%{_sql_literal(logical_name_filter)}%' "
+            f"AND DATABASE_NAME ILIKE '%{_sql_literal(database_name_filter)}%' "
+            f"AND SCHEMA_NAME ILIKE '%{_sql_literal(schema_name_filter)}%' "
+            f"AND COALESCE(SERVER_NAME, '') ILIKE '%{_sql_literal(server_name_filter)}%' "
+            "ORDER BY SOURCE_TABLE_NAME"
+        )
+
+        with st.expander("Lookup queries", expanded=False):
+            st.caption("Existing SQL metadata query")
+            st.code(debug_sql_metadata, language="sql")
+            st.caption("Source Table query")
+            st.code(debug_sql_source_tables, language="sql")
+            if not selected_source:
+                fallback_tables = [sql_defaults["source_table_name"]]
+                table_options = table_options or fallback_tables
+                default_table = sql_defaults["source_table_name"]
+                default_index = table_options.index(default_table) if default_table in table_options else 0
+
+        source_table_name = st.selectbox(
+            "Source Table",
+            options=table_options,
+            index=default_index,
+            key="source_table_name_select",
+            help="Reference the upstream SQL Server table or view.",
+            disabled=selected_source is not None and table_options == ["(No tables found)"]
+        )
         is_file_source = active_source_type in {"Flat File", "Excel File"}
 
         if is_file_source:
@@ -384,45 +523,6 @@ def _render_ingestion_builder(conn: Any, runtime_mode: str) -> None:
             has_header = ""
             file_format = sql_defaults["file_format"]
 
-        delta_options = _load_delta_columns(
-            conn,
-            runtime_mode,
-            logical_name=logical_name,
-            database_name=database_name,
-            schema_name=schema_name,
-            server_name=server_name,
-        )
-        base_delta_options = delta_options or SQL_SERVER_DELTA_COLUMNS
-        default_delta = base_delta_options[0] if base_delta_options else sql_defaults["delta_column"]
-        change_tracking_options = _load_change_tracking(
-            conn,
-            runtime_mode,
-            logical_name=logical_name,
-            database_name=database_name,
-            schema_name=schema_name,
-            server_name=server_name,
-        )
-        base_change_tracking = change_tracking_options or SQL_SERVER_CHANGE_TRACKING
-        col_delta, col_ct = st.columns(2)
-        try:
-            delta_default_index = base_delta_options.index(default_delta)
-        except ValueError:
-            delta_default_index = 0
-        delta_column_choice = col_delta.selectbox(
-            "Delta Column",
-            base_delta_options,
-            index=delta_default_index,
-        )
-        try:
-            ct_default_index = base_change_tracking.index(sql_defaults["change_tracking_type"])
-        except ValueError:
-            ct_default_index = 0
-        change_tracking_type = col_ct.selectbox(
-            "Change Tracking Type",
-            base_change_tracking,
-            index=ct_default_index,
-        )
-        delta_column = delta_column_choice
         env_upper = environment.upper()
         adhoc_proc_name = f"STAGE_{env_upper}.ELT.ADHOC_INSERT_METADATA_CONFIG_TABLE_{env_upper}"
         scheduled_proc_name = f"STAGE_{env_upper}.ELT.INSERT_METADATA_CONFIG_TABLE_{env_upper}"
@@ -587,6 +687,9 @@ LIMIT 20
     scheduled_proc_name = f"STAGE_{env_upper}.ELT.INSERT_METADATA_CONFIG_TABLE_{env_upper}"
 
     statements: StatementList = []
+    adhoc_entries: StatementList = []
+    reference_entries: StatementList = []
+    
     if run_now and environment in ADHOC_ENVIRONMENTS:
         statements.append(
             (
@@ -655,9 +758,10 @@ LIMIT 20
         )
         # Build ordered entries: adhoc SET/CALL (if applicable) first,
         # then scheduled SET/CALL, then the full scheduled metadata SQL.
-        new_entries: StatementList = []
+        adhoc_entries: StatementList = []
+        reference_entries: StatementList = []
 
-        # adhoc entries (for DEV/TEST/UAT)
+        # adhoc entries (for DEV/TEST/UAT) - these are executable
         if environment in ADHOC_ENVIRONMENTS:
             adhoc_key = str(uuid.uuid4())
             last_trigger = datetime.now()
@@ -678,12 +782,12 @@ LIMIT 20
                 "    $LAST_TRIGGER_TIMESTAMP\n"
                 ");"
             )
-            new_entries.append((f"SET variables for {adhoc_proc_name}", adhoc_set))
-            new_entries.append((f"Call adhoc trigger ({adhoc_proc_name})", adhoc_call))
+            adhoc_entries.append((f"SET variables for {adhoc_proc_name}", adhoc_set))
+            adhoc_entries.append((f"Call adhoc trigger ({adhoc_proc_name})", adhoc_call))
 
-        # scheduled SET/CALL
-        new_entries.append((f"SET variables for {scheduled_proc_name}", set_sql))
-        new_entries.append((f"Call scheduled procedure ({scheduled_proc_name})", call_sql))
+        # scheduled SET/CALL - reference only
+        reference_entries.append((f"SET variables for {scheduled_proc_name}", set_sql))
+        reference_entries.append((f"Call scheduled procedure ({scheduled_proc_name})", call_sql))
 
         # full metadata SQL for reference
         full_sql = build_schedule_update_sql(
@@ -718,125 +822,90 @@ LIMIT 20
             ),
             priority_flag=priority_flag,
         )
-        new_entries.append((f"Enable scheduled ingestion ({scheduled_proc_name})", full_sql))
+        reference_entries.append((f"Enable scheduled ingestion ({scheduled_proc_name})", full_sql))
 
-        # Prepend the new ordered entries so they display/run first
-        statements = new_entries + statements
+        # Combine: adhoc first (executable), then reference
+        statements = adhoc_entries + reference_entries
 
     if not statements:
         st.info("No SQL generated. Enable at least one action above.")
         return
 
-    st.markdown("### Generated SQL")
-    for label, sql in statements:
-        st.markdown(f"**{label}**")
-        st.code(sql, language="sql")
-
-    if conn is None:
-        st.info("Connect to Snowflake or DuckDB to execute this SQL.")
-        return
-
-    col_exec, col_view = st.columns(2)
-    with col_exec:
-        execute_now = st.button("Run SQL", type="primary", key="exec_copilot_sql")
-    with col_view:
-        show_adhoc = st.button("Show adhoc table", key="show_adhoc_table")
-
-    # Show adhoc table on demand
-    if show_adhoc:
-        env_upper = environment.upper()
-        if runtime_mode == "duckdb":
-            adhoc_table_ref = "METADATA_CONFIG_TABLE_ELT_ADHOC"
-        else:
-            adhoc_table_ref = f"STAGE_{env_upper}.ELT.METADATA_CONFIG_TABLE_ELT_ADHOC"
+    # Display adhoc statements with Run SQL button
+    if adhoc_entries:
+        st.markdown("### Adhoc Trigger SQL")
+        for label, sql in adhoc_entries:
+            st.markdown(f"**{label}**")
+            st.code(sql, language="sql")
         
-        query_adhoc = f"SELECT * FROM {adhoc_table_ref} ORDER BY LAST_TRIGGER_TIMESTAMP DESC LIMIT 50"
-        try:
-            df_adhoc = run_query(conn, query_adhoc, runtime_mode)
-            if df_adhoc is not None and not df_adhoc.empty:
-                st.subheader(f"Recent adhoc triggers ({len(df_adhoc)} rows)")
-                st.dataframe(df_adhoc, hide_index=True, width="stretch")
-            else:
-                st.info("No adhoc triggers found in this environment.")
-        except Exception as e:
-            st.warning(f"Could not fetch adhoc table: {e}")
-        return
-
-    if not execute_now:
-        return
-
-    with st.spinner("Executing SQL..."):
-        # If adhoc environment, try to locate the metadata_config_key and
-        # call the adhoc insert procedure first (inserts a trigger row).
-        if environment in ADHOC_ENVIRONMENTS:
-            env_upper = environment.upper()
-            metadata_table = f"STAGE_{env_upper}.ELT.METADATA_CONFIG_TABLE_ELT"
-            lookup_query = (
-                "SELECT METADATA_CONFIG_KEY FROM "
-                f"{metadata_table} "
-                "WHERE LOWER(TRIM(COALESCE(LOGICAL_NAME, ''))) = LOWER(TRIM('%(logical)s')) "
-                "AND LOWER(TRIM(COALESCE(DATABASE_NAME, ''))) = LOWER(TRIM('%(db)s')) "
-                "AND LOWER(TRIM(COALESCE(SCHEMA_NAME, ''))) = LOWER(TRIM('%(schema)s')) "
-                "AND LOWER(TRIM(COALESCE(SOURCE_TABLE_NAME, ''))) = LOWER(TRIM('%(table)s')) LIMIT 1"
-            )
-            try:
-                df = run_query(
-                    conn,
-                    lookup_query % {
-                        "logical": logical_name or "",
-                        "db": database_name or "",
-                        "schema": schema_name or "",
-                        "table": source_table_name or "",
-                    },
-                    runtime_mode,
-                )
-            except Exception as e:
-                st.warning(f"Metadata lookup failed: {e}")
-                df = None
-
-            if df is None or df.empty:
-                st.warning("Could not find a metadata_config_key for the provided inputs; adhoc trigger not inserted.")
-            else:
-                metadata_config_key = str(df.iloc[0]["METADATA_CONFIG_KEY"]).strip()
-                proc_name = f"STAGE_{env_upper}.ELT.INSERT_METADATA_CONFIG_TABLE_ADHOC_{env_upper}"
-                now_ts = datetime.now().isoformat()
-                start_ts = schedule_start_dt.isoformat() if schedule_start_dt else now_ts
-                end_ts = schedule_stop_dt.isoformat() if schedule_stop_dt else now_ts
-                call_sql = (
-                    f"CALL {proc_name}('{metadata_config_key}','{start_ts}','{end_ts}','{now_ts}');"
-                )
-                ok, msg = execute_ddl_dml(conn, runtime_mode, call_sql)
-                if ok:
-                    st.success(f"Adhoc trigger inserted via {proc_name}.")
-                else:
-                    st.error(f"Failed to insert adhoc trigger: {msg}")
-
-        for label, sql in statements:
-            ok, msg = execute_ddl_dml(conn, runtime_mode, sql)
-            if ok:
-                st.success(f"{label} executed successfully.")
-            else:
-                st.error(f"{label} failed: {msg}")
-                break
-    
-    # Display adhoc table after execution
-    st.divider()
-    env_upper = environment.upper()
-    if runtime_mode == "duckdb":
-        adhoc_table_ref = "METADATA_CONFIG_TABLE_ELT_ADHOC"
-    else:
-        adhoc_table_ref = f"STAGE_{env_upper}.ELT.METADATA_CONFIG_TABLE_ELT_ADHOC"
-    
-    query_adhoc = f"SELECT * FROM {adhoc_table_ref} ORDER BY LAST_TRIGGER_TIMESTAMP DESC LIMIT 50"
-    try:
-        df_adhoc = run_query(conn, query_adhoc, runtime_mode)
-        if df_adhoc is not None and not df_adhoc.empty:
-            st.subheader(f"Recent adhoc triggers ({len(df_adhoc)} rows)")
-            st.dataframe(df_adhoc, hide_index=True, width="stretch")
+        if conn is None:
+            st.info("Connect to Snowflake or DuckDB to execute this SQL.")
         else:
-            st.info("No adhoc triggers found in this environment.")
-    except Exception as e:
-        st.warning(f"Could not fetch adhoc table: {e}")
+            col_exec, col_view = st.columns(2)
+            with col_exec:
+                execute_now = st.button("Run SQL", type="primary", key="exec_copilot_sql")
+            with col_view:
+                show_adhoc = st.button("Show adhoc table", key="show_adhoc_table")
+
+            # Show adhoc table on demand
+            if show_adhoc:
+                env_upper = environment.upper()
+                if runtime_mode == "duckdb":
+                    adhoc_table_ref = "METADATA_CONFIG_TABLE_ELT_ADHOC"
+                else:
+                    adhoc_table_ref = f"STAGE_{env_upper}.ELT.METADATA_CONFIG_TABLE_ELT_ADHOC"
+                
+                query_adhoc = f"SELECT * FROM {adhoc_table_ref} ORDER BY LAST_TRIGGER_TIMESTAMP DESC LIMIT 50"
+                try:
+                    df_adhoc = run_query(conn, query_adhoc, runtime_mode)
+                    if df_adhoc is not None and not df_adhoc.empty:
+                        st.subheader(f"Recent adhoc triggers ({len(df_adhoc)} rows)")
+                        st.dataframe(df_adhoc, hide_index=True, width="stretch")
+                    else:
+                        st.info("No adhoc triggers found in this environment.")
+                except Exception as e:
+                    st.warning(f"Could not fetch adhoc table: {e}")
+                return
+
+            if execute_now:
+                with st.spinner("Executing adhoc trigger SQL..."):
+                    # Execute only the adhoc statements
+                    for label, sql in adhoc_entries:
+                        ok, msg = execute_ddl_dml(conn, runtime_mode, sql)
+                        if ok:
+                            st.success(f"{label} executed successfully.")
+                        else:
+                            st.error(f"{label} failed: {msg}")
+                            break
+                
+                # Display adhoc table after execution
+                st.divider()
+                env_upper = environment.upper()
+                if runtime_mode == "duckdb":
+                    adhoc_table_ref = "METADATA_CONFIG_TABLE_ELT_ADHOC"
+                else:
+                    adhoc_table_ref = f"STAGE_{env_upper}.ELT.METADATA_CONFIG_TABLE_ELT_ADHOC"
+                
+                query_adhoc = f"SELECT * FROM {adhoc_table_ref} ORDER BY LAST_TRIGGER_TIMESTAMP DESC LIMIT 50"
+                try:
+                    df_adhoc = run_query(conn, query_adhoc, runtime_mode)
+                    if df_adhoc is not None and not df_adhoc.empty:
+                        st.subheader(f"Recent adhoc triggers ({len(df_adhoc)} rows)")
+                        st.dataframe(df_adhoc, hide_index=True, width="stretch")
+                    else:
+                        st.info("No adhoc triggers found in this environment.")
+                except Exception as e:
+                    st.warning(f"Could not fetch adhoc table: {e}")
+                return
+
+    # Display reference statements (scheduled procedure)
+    if reference_entries:
+        st.divider()
+        st.markdown("### Reference SQL (Scheduled Procedure)")
+        st.caption("These statements are for reference only. Copy and run manually in Snowflake if needed.")
+        for label, sql in reference_entries:
+            with st.expander(label, expanded=False):
+                st.code(sql, language="sql")
 
 
 def _render_table_lookup(conn: Any, runtime_mode: str) -> None:
